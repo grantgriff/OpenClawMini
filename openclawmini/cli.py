@@ -1074,6 +1074,86 @@ def _ascii_bar(value: float, width: int = 12) -> str:
     return f"[{'█' * filled}{'░' * (width - filled)}]"
 
 
+@app.command("train")
+def cmd_train(
+    budget: float = typer.Option(None, "--budget", "-b", help="USD budget cap (overrides config)."),
+    auto: bool = typer.Option(True, "--auto/--no-auto", help="Run fully autonomous (default: True)."),
+) -> None:
+    """Run the full autonomous training loop (BASE → SFT → GRPO) via OrchestratorAgent."""
+    load_env()
+    print_banner()
+
+    config = load_config()
+    if config is None:
+        console.print(
+            f"[red]No config found.[/] Run [bold cyan]openclawmini init[/] first."
+        )
+        raise typer.Exit(1)
+
+    if budget is not None:
+        config.training.orchestrator_budget = budget
+
+    from openclawmini.memory.store import MemoryStore
+
+    store = MemoryStore(config.training.memory_file_path)
+    memory = store.load()
+
+    mem_stats = memory.stats()
+    if mem_stats.get("total_items", 0) == 0:
+        console.print(
+            f"[red]Memory is empty.[/] Run [bold cyan]openclawmini run[/] first to collect your data."
+        )
+        raise typer.Exit(1)
+
+    print_panel(
+        f"[bold {COLORS['orange_5']}]Autonomous Training Loop[/]\n\n"
+        f"  Memory:      [cyan]{mem_stats['total_items']} items[/] "
+        f"({mem_stats['facts']} facts, {mem_stats['writing_samples']} writing samples)\n"
+        f"  Target:      [cyan]{config.training.final_target_accuracy:.0%}[/] overall accuracy\n"
+        f"  Budget:      [cyan]${config.training.orchestrator_budget:.0f}[/] USD\n"
+        f"  Orchestrator:[cyan]{config.orchestrator.model}[/]\n"
+        f"  Base model:  [cyan]{config.base_model.model}[/]",
+        title="🟠 OpenClawMini Train",
+    )
+
+    from openclawmini.agents.orchestrator_agent import OrchestratorAgent
+
+    orchestrator = OrchestratorAgent.from_env(config, memory, store)
+
+    try:
+        with console.status(f"[bold {COLORS['orange_3']}]Orchestrator running...[/]"):
+            result = orchestrator.run()
+    except KeyboardInterrupt:
+        console.print(f"\n[yellow]Training interrupted by user.[/]")
+        raise typer.Exit(0)
+    except Exception as e:
+        console.print(f"[red]Training loop failed: {e}[/]")
+        raise typer.Exit(1)
+
+    # ── Final results ──────────────────────────────────────────
+    target_str = (
+        f"[bold green]Yes ✓[/]" if result.target_reached else f"[yellow]No[/]"
+    )
+    print_panel(
+        f"[bold {COLORS['orange_5']}]{'🎉 TARGET REACHED!' if result.target_reached else 'Training Complete'}[/]\n\n"
+        + "\n".join(result.summary_lines())
+        + f"\n  Target reached:     {target_str}",
+        title="🟠 Results",
+    )
+
+    if result.eval_history:
+        print_progress_table(result.eval_history)
+
+    try:
+        from openclawmini.integrations.wb_logger import WBLogger
+        logger = WBLogger.from_env()
+        for entry in result.eval_history:
+            if hasattr(entry, "factual_accuracy"):
+                logger.log_eval(entry)
+    except Exception:
+        pass
+
+
 @app.command("chat")
 def cmd_chat() -> None:
     """Chat with your trained personalized model."""
