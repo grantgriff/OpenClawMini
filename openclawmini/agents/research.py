@@ -270,8 +270,11 @@ class ResearchAgent:
 
         result.emails_skipped += fetch_result.skipped_short + fetch_result.skipped_no_body
 
-        for email in fetch_result.emails:
+        total_emails = len(fetch_result.emails)
+        for i, email in enumerate(fetch_result.emails):
             result.emails_processed += 1
+            if progress_callback:
+                progress_callback("gmail_extract", i + 1, total_emails)
             self._process_email(email, result)
 
         if fetch_result.emails:
