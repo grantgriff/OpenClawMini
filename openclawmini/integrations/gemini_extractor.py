@@ -75,7 +75,7 @@ class GeminiExtractor:
     Uses the new google-genai SDK (google.genai).
     """
 
-    def __init__(self, model: str = "gemini-2.0-flash", api_key: Optional[str] = None) -> None:
+    def __init__(self, model: str = "gemini-2.5-flash", api_key: Optional[str] = None) -> None:
         self.model = model
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY", "")
         self._client = None
@@ -313,7 +313,7 @@ JSON only, no markdown fences:"""
             return []
 
     @classmethod
-    def from_env(cls, model: str = "gemini-2.0-flash") -> Optional["GeminiExtractor"]:
+    def from_env(cls, model: str = "gemini-2.5-flash") -> Optional["GeminiExtractor"]:
         """Build a GeminiExtractor from environment variables. Returns None if no API key."""
         api_key = os.getenv("GOOGLE_API_KEY", "").strip()
         if not api_key:
