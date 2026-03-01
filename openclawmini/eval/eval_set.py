@@ -100,6 +100,10 @@ class EvalSetStore:
         with open(self.path) as f:
             return EvalSet.model_validate(json.load(f))
 
+    def delete(self) -> None:
+        """Remove the saved eval set so it will be regenerated on next run."""
+        self.path.unlink(missing_ok=True)
+
 
 # ── Generator ─────────────────────────────────────────────────
 

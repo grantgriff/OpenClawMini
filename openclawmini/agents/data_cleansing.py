@@ -419,8 +419,8 @@ class DataCleansingAgent:
         """Run DataSimulator across ALL memory sources and return user questions only."""
         from datasimulator import DataSimulator  # type: ignore[import]
 
-        if not memory.facts and not memory.writing_samples and not memory.posts:
-            raise ValueError("Memory is empty")
+        if not memory.facts:
+            raise ValueError("No facts in memory — skipping DataSimulator GRPO to avoid safety filter errors")
 
         # Build source list: facts profile + writing samples + preferences
         profile_path = self._write_memory_profile(memory)

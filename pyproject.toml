@@ -40,6 +40,8 @@ dependencies = [
     "anthropic>=0.34",
     # HuggingFace Hub (model export/upload after fine-tuning)
     "huggingface_hub>=0.20",
+    # PDF text extraction (for resume / bio uploads)
+    "pypdf>=4.0",
 ]
 
 [project.scripts]

@@ -63,10 +63,16 @@ def parse_log_file(path: str) -> list[Conversation]:
     """
     Auto-detect format and parse a log file into Conversation objects.
 
+    Supports ChatGPT/Claude JSON exports, generic role/content JSON, and PDF files.
+
     Raises:
         ValueError: if the file format is not recognized.
     """
-    with open(path) as f:
+    # Handle PDF files separately — extract text and return as a document conversation
+    if path.lower().endswith(".pdf"):
+        return _parse_pdf_file(path)
+
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
     fmt = detect_format(data)
@@ -81,6 +87,46 @@ def parse_log_file(path: str) -> list[Conversation]:
             f"Unrecognized log format in {path}. "
             "Expected ChatGPT, Claude, or generic role/content list."
         )
+
+
+def _parse_pdf_file(path: str) -> list[Conversation]:
+    """
+    Extract text from a PDF file and return it as a single Conversation.
+
+    The extracted text is returned as a user message so that the research
+    agent's fact extraction pipeline can process it normally.
+
+    Raises:
+        ValueError: if pypdf is not installed or the PDF cannot be read.
+    """
+    try:
+        import pypdf
+    except ImportError:
+        raise ValueError(
+            "pypdf is required for PDF parsing. Install it with: pip install pypdf"
+        )
+
+    text_parts: list[str] = []
+    try:
+        with open(path, "rb") as f:
+            reader = pypdf.PdfReader(f)
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text.strip())
+    except Exception as exc:
+        raise ValueError(f"Failed to read PDF {path}: {exc}") from exc
+
+    combined = "\n\n".join(text_parts).strip()
+    if not combined:
+        raise ValueError(f"No text could be extracted from PDF {path}.")
+
+    return [Conversation(
+        id=f"pdf_{Path(path).stem}",
+        title=Path(path).name,
+        messages=[Message(role="user", content=combined[:8000])],
+        source_format="pdf",
+    )]
 
 
 def parse_chatgpt_export(data: list[dict]) -> list[Conversation]:

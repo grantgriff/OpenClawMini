@@ -393,10 +393,16 @@ class ResearchAgent:
             return
 
         # Generate 20 personalized queries with Gemini; fall back to static list
-        queries = (
-            _generate_web_search_queries(extractor, name, email, self.memory, count=20)
-            or build_search_queries(name, email, linkedin_url)
-        )
+        gemini_queries = _generate_web_search_queries(extractor, name, email, self.memory, count=20)
+        if gemini_queries:
+            queries = gemini_queries
+        else:
+            # Gemini query generation failed; use static fallback
+            queries = build_search_queries(name, email, linkedin_url)
+            result.errors.append(
+                f"Gemini query generation failed — using {len(queries)} static queries. "
+                "Check GOOGLE_API_KEY if you expected 20 personalized queries."
+            )
         seen_urls: set[str] = set()
         total_queries = min(len(queries), 20)
 
@@ -413,7 +419,11 @@ class ResearchAgent:
 
         # ── Parallel page scraping ────────────────────────────
         urls_to_scrape = [r.url for r in all_results if r.url]
+        if progress_callback and urls_to_scrape:
+            progress_callback("web_scrape", 0, len(urls_to_scrape))
         scraped = scrape_pages_parallel(urls_to_scrape, max_workers=6)
+        if progress_callback and urls_to_scrape:
+            progress_callback("web_scrape", len(urls_to_scrape), len(urls_to_scrape))
 
         for r in all_results:
             page_text = scraped.get(r.url, "") or r.snippet
@@ -813,12 +823,13 @@ def _generate_web_search_queries(
 
     try:
         raw = extractor.complete(prompt)
-        raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
-        match = re.search(r"\[.*\]", raw, re.DOTALL)
-        if match:
-            queries = json.loads(match.group())
-            if isinstance(queries, list) and queries:
-                return [str(q).strip() for q in queries if str(q).strip()][:count]
+        if raw:
+            raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            if match:
+                queries = json.loads(match.group())
+                if isinstance(queries, list) and queries:
+                    return [str(q).strip() for q in queries if str(q).strip()][:count]
     except Exception:
         pass
 

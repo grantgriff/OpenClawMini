@@ -531,6 +531,7 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
     _STAGE_LABEL = {
         "gmail": ("📧", "emails"),
         "web_search": ("🔍", "queries"),
+        "web_scrape": ("🌐", "pages"),
         "linkedin": ("💼", "profiles"),
     }
 
@@ -1383,11 +1384,29 @@ def _ensure_eval_set(config: Config, memory) -> None:
     if eval_store.exists():
         eval_set = eval_store.load()
         stats = eval_set.stats() if eval_set else {}
-        console.print(
-            f"[{COLORS['orange_3']}]Eval set loaded:[/]  "
-            f"[cyan]{stats.get('factual_questions', 0)}[/] factual,  "
-            f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic\n"
-        )
+        # Regenerate if we now have facts but the saved eval set has none —
+        # this happens when the eval set was created before research completed.
+        has_facts = len(getattr(memory, "facts", [])) > 0
+        needs_regen = has_facts and stats.get("factual_questions", 0) == 0
+        if needs_regen:
+            console.print(
+                f"[{COLORS['orange_4']}]Eval set has 0 factual questions but memory now has facts "
+                f"— regenerating...[/]\n"
+            )
+            eval_store.delete()
+            eval_set = agent.generate_eval_set(memory)
+            stats = eval_set.stats()
+            console.print(
+                f"[bold {COLORS['orange_5']}]✓ Eval set ready:[/]  "
+                f"[cyan]{stats.get('factual_questions', 0)}[/] factual,  "
+                f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic\n"
+            )
+        else:
+            console.print(
+                f"[{COLORS['orange_3']}]Eval set loaded:[/]  "
+                f"[cyan]{stats.get('factual_questions', 0)}[/] factual,  "
+                f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic\n"
+            )
     else:
         eval_set = agent.generate_eval_set(memory)
         stats = eval_set.stats()

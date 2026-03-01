@@ -81,11 +81,36 @@ class GeminiExtractor:
             self._genai_model = genai.GenerativeModel(self.model)
         return self._genai_model
 
+    def _safety_settings(self):
+        """Return permissive safety settings for personal data extraction.
+
+        Personal emails and web pages often contain names, addresses, or
+        professional info that Gemini's default filters may block. We disable
+        all harm categories so every fact-extraction call goes through.
+        """
+        try:
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+            return {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        except Exception:
+            return None
+
     def complete(self, prompt: str) -> str:
         """Single-turn completion. Used by MemoryClassifier for classification."""
         m = self._get_model()
-        response = m.generate_content(prompt)
-        return response.text
+        safety = self._safety_settings()
+        kwargs = {"safety_settings": safety} if safety else {}
+        response = m.generate_content(prompt, **kwargs)
+        try:
+            return response.text
+        except Exception:
+            # Response was safety-blocked (finish_reason=2) or otherwise empty.
+            # Return empty string so callers degrade gracefully instead of crashing.
+            return ""
 
     # ── Email fact extraction ──────────────────────────────────
 
