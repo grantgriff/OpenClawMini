@@ -49,15 +49,15 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    sft_sample_count: int = 200
-    grpo_scenario_count: int = 100
+    sft_sample_count: int = 30
+    grpo_scenario_count: int = 15
     quality_threshold: float = 7.0
     sft_factual_threshold: float = 0.70
     final_target_accuracy: float = 0.80
-    sft_epochs: int = 3
+    sft_epochs: int = 1
     sft_learning_rate: float = 2e-5
-    grpo_steps: int = 100
-    grpo_trajectories_per_scenario: int = 4
+    grpo_steps: int = 30
+    grpo_trajectories_per_scenario: int = 2
     orchestrator_budget: float = 25.0   # Max USD for autonomous orchestration
 
 
@@ -115,15 +115,15 @@ def load_config(config_path: str = "config.yaml") -> Config:
     user_raw = raw.get("user", {})
 
     training = TrainingConfig(
-        sft_sample_count=training_raw.get("sft_sample_count", 200),
-        grpo_scenario_count=training_raw.get("grpo_scenario_count", 100),
+        sft_sample_count=training_raw.get("sft_sample_count", 30),
+        grpo_scenario_count=training_raw.get("grpo_scenario_count", 15),
         quality_threshold=training_raw.get("quality_threshold", 7.0),
         sft_factual_threshold=training_raw.get("sft_factual_threshold", 0.70),
         final_target_accuracy=training_raw.get("final_target_accuracy", 0.80),
-        sft_epochs=training_raw.get("sft_epochs", 3),
+        sft_epochs=training_raw.get("sft_epochs", 1),
         sft_learning_rate=training_raw.get("sft_learning_rate", 2e-5),
-        grpo_steps=training_raw.get("grpo_steps", 100),
-        grpo_trajectories_per_scenario=training_raw.get("grpo_trajectories_per_scenario", 4),
+        grpo_steps=training_raw.get("grpo_steps", 30),
+        grpo_trajectories_per_scenario=training_raw.get("grpo_trajectories_per_scenario", 2),
         orchestrator_budget=training_raw.get("orchestrator_budget", 25.0),
     )
 

@@ -30,15 +30,15 @@ models:
     model: "ministral-8b-2512"
 
 training:
-  sft_sample_count: 200
-  grpo_scenario_count: 100
+  sft_sample_count: 30
+  grpo_scenario_count: 15
   quality_threshold: 7.0
   sft_factual_threshold: 0.70
   final_target_accuracy: 0.80
-  sft_epochs: 3
+  sft_epochs: 1
   sft_learning_rate: 0.00002
-  grpo_steps: 100
-  grpo_trajectories_per_scenario: 4
+  grpo_steps: 30
+  grpo_trajectories_per_scenario: 2
 
 storage:
   memory_file_path: "./data/memory.json"
