@@ -564,8 +564,17 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
     # Save updated memory
     store.save(memory)
 
-    # Print result summary
-    if result.total_added > 0:
+    # ── Document upload (BEFORE summary so docs enrich the total count) ───
+    console.print(
+        f"\n[bold {COLORS['orange_2']}]📄 Documents[/]\n"
+        f"[dim]Share a resume, LinkedIn PDF, bio, or any text file to give the model "
+        f"richer personal context. Gemini will extract 50+ facts from your resume.[/]\n"
+    )
+    if Confirm.ask("  Upload documents now?", default=True, console=console):
+        _collect_document_files(store, memory, extractor)
+
+    # Print result summary (after docs so totals include document facts)
+    if result.total_added > 0 or len(getattr(memory, "facts", [])) > 0:
         console.print(f"\n[bold {COLORS['orange_5']}]✓ Research complete![/]")
         console.print(result.summary())
     else:
@@ -578,15 +587,6 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
         console.print(f"\n[dim]Notes:[/]")
         for err in result.errors:
             console.print(f"  [dim]• {err}[/]")
-
-    # ── Document upload ────────────────────────────────────────
-    console.print(
-        f"\n[bold {COLORS['orange_2']}]📄 Documents[/]\n"
-        f"[dim]Share a resume, LinkedIn PDF, bio, or any text file to give the model "
-        f"richer personal context.[/]\n"
-    )
-    if Confirm.ask("  Upload documents now?", default=True, console=console):
-        _collect_document_files(store, memory, extractor)
 
 
 def _collect_document_files(store, memory, extractor) -> None:
@@ -621,13 +621,50 @@ def _collect_document_files(store, memory, extractor) -> None:
         return
 
     agent = ResearchAgent(store=store, memory=memory, llm_client=extractor)
-    console.print(f"\n[{COLORS['orange_3']}]Processing {len(file_paths)} document(s)...[/]")
+    console.print(f"\n[{COLORS['orange_3']}]Processing {len(file_paths)} document(s) with Gemini Flash...[/]")
+    console.print(f"[dim]Extracting 50+ facts per document — this takes 30-60 seconds per file.[/]\n")
     doc_result = agent.process_uploaded_files(file_paths)
+
+    # Also run extract_facts_from_document directly for richer resume extraction
+    if extractor and hasattr(extractor, "extract_facts_from_document"):
+        from openclawmini.memory.schema import DataSource
+        from openclawmini.memory import MemoryStore
+        for file_path in file_paths:
+            try:
+                p = Path(file_path)
+                if p.suffix.lower() == ".pdf":
+                    import pypdf
+                    with open(file_path, "rb") as f:
+                        reader = pypdf.PdfReader(f)
+                        text = "\n".join(
+                            page.extract_text() or "" for page in reader.pages
+                        )
+                else:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                if text.strip():
+                    console.print(f"  [dim]Gemini extracting facts from {p.name}...[/]")
+                    facts = extractor.extract_facts_from_document(
+                        text=text,
+                        filename=p.name,
+                        user_name=getattr(memory.user, "name", ""),
+                    )
+                    added = 0
+                    for fact in facts:
+                        before = len(memory.facts)
+                        store.add_fact(memory, fact)
+                        if len(memory.facts) > before:
+                            added += 1
+                    if added:
+                        console.print(f"  [bold {COLORS['orange_5']}]✓ {added} facts extracted from {p.name}[/]")
+            except Exception as e:
+                console.print(f"  [dim red]Document extraction error for {file_path}: {e}[/]")
+
     store.save(memory)
 
-    if doc_result.total_added > 0:
+    if doc_result.total_added > 0 or len(getattr(memory, "facts", [])) > 0:
         console.print(f"\n[bold {COLORS['orange_5']}]✓ Documents processed![/]")
-        console.print(doc_result.summary())
+        if doc_result.total_added > 0:
+            console.print(doc_result.summary())
     else:
         console.print(f"[{COLORS['orange_4']}]No new items extracted from documents.[/]")
     for err in doc_result.errors:
