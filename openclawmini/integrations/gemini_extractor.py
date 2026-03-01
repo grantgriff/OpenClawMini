@@ -274,6 +274,59 @@ JSON only, no markdown fences. Be exhaustive — more facts = better model train
                 unique_facts.append(f)
         return unique_facts
 
+    # ── Batch email fact extraction ────────────────────────────
+
+    def extract_facts_from_email_batch(
+        self,
+        emails: list[dict],
+        user_name: str = "",
+    ) -> list[Fact]:
+        """
+        Extract facts from a batch of emails in a single Gemini call.
+
+        Each dict should have 'body' and 'subject' keys (already PII-scrubbed).
+        Returns a combined deduplicated list of Fact objects.
+        """
+        if not self.api_key or not emails:
+            return []
+
+        user_hint = f"These emails were all written by {user_name}. " if user_name else ""
+
+        # Format batch — cap each email body to keep total prompt < 15k chars
+        per_email_limit = max(200, 12000 // len(emails))
+        blocks = []
+        for i, em in enumerate(emails[:100], 1):
+            subject = em.get("subject", "(no subject)")[:100]
+            body = em.get("body", "")[:per_email_limit]
+            blocks.append(f"=== Email {i} ===\nSubject: {subject}\n{body}")
+
+        combined = "\n\n".join(blocks)
+
+        prompt = f"""You are analyzing {len(emails)} emails written by the same person to extract structured facts about THEM (the author).
+
+{user_hint}
+{combined[:15000]}
+
+Extract ALL unique factual information about the email AUTHOR across ALL emails.
+Focus on: job/role, company, location, education, skills, interests, achievements, personal background.
+Deduplicate — include each unique fact only once.
+Aim for at least 10-20 unique facts across the batch.
+
+Return a JSON array (empty [] if truly nothing found):
+[
+  {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  ...
+]
+
+JSON only, no markdown fences:"""
+
+        try:
+            raw = self.complete(prompt)
+            return _parse_facts_json(raw, DataSource.GMAIL)
+        except Exception as e:
+            print(f"[extract_facts_from_email_batch] {type(e).__name__}: {e}", file=sys.stderr)
+            return []
+
     # ── Conversation / log file fact extraction ────────────────
 
     def extract_facts_from_conversation(

@@ -270,12 +270,112 @@ class ResearchAgent:
 
         result.emails_skipped += fetch_result.skipped_short + fetch_result.skipped_no_body
 
-        total_emails = len(fetch_result.emails)
-        for i, email in enumerate(fetch_result.emails):
+        from openclawmini.utils.pii_scrubber import redact_pii
+
+        # ── Pass 1: fast per-email processing (no Gemini calls) ───────────
+        # Writing samples, relationships, preferences — all rule-based/fast.
+        # Also PII-scrub and collect (safe_body, email) for batch extraction.
+        prepared: list[tuple[str, object]] = []
+        for email in fetch_result.emails:
             result.emails_processed += 1
-            if progress_callback:
-                progress_callback("gmail_extract", i + 1, total_emails)
-            self._process_email(email, result)
+            safe_body = redact_pii(email.body)
+
+            # Writing sample
+            writing_cat = _email_writing_category(email)
+            sample = WritingSample(
+                text=safe_body,
+                category=writing_cat,
+                context=f"Email: {email.subject[:80]}",
+                source=DataSource.GMAIL,
+            )
+            before = len(self.memory.writing_samples)
+            self.store.add_writing_sample(self.memory, sample)
+            if len(self.memory.writing_samples) > before:
+                result.writing_samples_added += 1
+
+            # Relationship
+            name = _extract_recipient_name(email.recipient)
+            if name:
+                rel = Relationship(
+                    name=name,
+                    relationship=_infer_relationship_type(email),
+                    interaction_frequency=_infer_frequency(email),
+                    source=DataSource.GMAIL,
+                )
+                before = len(self.memory.relationships)
+                self.store.add_relationship(self.memory, rel)
+                if len(self.memory.relationships) > before:
+                    result.relationships_added += 1
+
+            # Preference
+            pref_cls = self.classifier._classify_rule_based(safe_body, source=DataSource.GMAIL)
+            if pref_cls.category == MemoryCategory.PREFERENCE:
+                pref = Preference(
+                    content=safe_body[:300],
+                    category=pref_cls.sub_category or "other",
+                    evidence=f"Extracted from email: {email.subject[:60]}",
+                    confidence=pref_cls.confidence,
+                    source=DataSource.GMAIL,
+                )
+                before = len(self.memory.preferences)
+                self.store.add_preference(self.memory, pref)
+                if len(self.memory.preferences) > before:
+                    result.preferences_added += 1
+
+            prepared.append((safe_body, email))
+
+        # ── Pass 2: Gemini fact extraction in batches of 100 ──────────────
+        if self._extractor and hasattr(self._extractor, "extract_facts_from_email_batch"):
+            batch_size = 100
+            batches = [prepared[i:i + batch_size] for i in range(0, len(prepared), batch_size)]
+            total_batches = len(batches)
+            for batch_idx, batch in enumerate(batches):
+                if progress_callback:
+                    progress_callback("gmail_extract", batch_idx + 1, total_batches)
+                email_dicts = [
+                    {"body": body, "subject": em.subject}
+                    for body, em in batch
+                ]
+                facts = self._extractor.extract_facts_from_email_batch(
+                    email_dicts,
+                    user_name=self.memory.user.name,
+                )
+                for fact in facts:
+                    before = len(self.memory.facts)
+                    self.store.add_fact(self.memory, fact)
+                    if len(self.memory.facts) > before:
+                        result.facts_added += 1
+        elif self._extractor and hasattr(self._extractor, "extract_facts_from_email"):
+            # Fallback: per-email extraction
+            total_emails = len(prepared)
+            for i, (safe_body, email) in enumerate(prepared):
+                if progress_callback:
+                    progress_callback("gmail_extract", i + 1, total_emails)
+                facts = self._extractor.extract_facts_from_email(
+                    email_body=safe_body,
+                    email_subject=email.subject,
+                    user_name=self.memory.user.name,
+                )
+                for fact in facts:
+                    before = len(self.memory.facts)
+                    self.store.add_fact(self.memory, fact)
+                    if len(self.memory.facts) > before:
+                        result.facts_added += 1
+        else:
+            # Rule-based fallback
+            for safe_body, _ in prepared:
+                classification = self.classifier.classify(safe_body, source=DataSource.GMAIL)
+                if classification.category == MemoryCategory.FACTUAL:
+                    fact = Fact(
+                        content=safe_body[:500],
+                        category=classification.sub_category or FactCategory.OTHER,
+                        confidence=classification.confidence,
+                        source=DataSource.GMAIL,
+                    )
+                    before = len(self.memory.facts)
+                    self.store.add_fact(self.memory, fact)
+                    if len(self.memory.facts) > before:
+                        result.facts_added += 1
 
         if fetch_result.emails:
             analysis = self.store.compute_style_analysis(self.memory)
@@ -283,17 +383,12 @@ class ResearchAgent:
 
     def _process_email(self, email, result: ResearchResult) -> None:
         """
-        Process a single parsed email:
-          0. Redact PII from body before any storage or extraction.
-          1. Always store it as a writing sample (captures style).
-          2. Use Gemini to extract multiple facts (if available), else rule-based.
-          3. Always do rule-based relationship + preference extraction.
+        Process a single parsed email (legacy / direct callers).
+        For bulk Gmail processing, _research_gmail now uses batched extraction.
         """
-        # ── 0. PII scrubbing (always, before anything else) ───
         from openclawmini.utils.pii_scrubber import redact_pii
         safe_body = redact_pii(email.body)
 
-        # ── 1. Writing sample (always) ─────────────────────────
         writing_cat = _email_writing_category(email)
         sample = WritingSample(
             text=safe_body,
@@ -306,9 +401,7 @@ class ResearchAgent:
         if len(self.memory.writing_samples) > before:
             result.writing_samples_added += 1
 
-        # ── 2. Fact extraction ─────────────────────────────────
         if self._extractor and hasattr(self._extractor, "extract_facts_from_email"):
-            # Gemini multi-fact extraction
             facts = self._extractor.extract_facts_from_email(
                 email_body=safe_body,
                 email_subject=email.subject,
@@ -320,7 +413,6 @@ class ResearchAgent:
                 if len(self.memory.facts) > before:
                     result.facts_added += 1
         else:
-            # Rule-based fallback: only store if classified as FACTUAL
             classification = self.classifier.classify(safe_body, source=DataSource.GMAIL)
             if classification.category == MemoryCategory.FACTUAL:
                 fact = Fact(
@@ -334,7 +426,6 @@ class ResearchAgent:
                 if len(self.memory.facts) > before:
                     result.facts_added += 1
 
-        # ── 3. Relationship extraction (rule-based, always) ────
         name = _extract_recipient_name(email.recipient)
         if name:
             rel = Relationship(
@@ -348,7 +439,6 @@ class ResearchAgent:
             if len(self.memory.relationships) > before:
                 result.relationships_added += 1
 
-        # ── 4. Preference extraction (rule-based, always) ──────
         pref_cls = self.classifier._classify_rule_based(safe_body, source=DataSource.GMAIL)
         if pref_cls.category == MemoryCategory.PREFERENCE:
             pref = Preference(

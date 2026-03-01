@@ -530,7 +530,7 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
 
     _STAGE_LABEL = {
         "gmail": ("📧", "emails"),
-        "gmail_extract": ("🧠", "extracted"),
+        "gmail_extract": ("🧠", "batches"),
         "web_search": ("🔍", "queries"),
         "web_scrape": ("🌐", "pages"),
         "linkedin": ("💼", "profiles"),
