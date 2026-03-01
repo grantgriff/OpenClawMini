@@ -187,7 +187,7 @@ class EvalsAgent:
         from openclawmini.utils.llm_client import MistralClient
 
         api_key = os.getenv("MISTRAL_API_KEY", "").strip()
-        model = os.getenv("BASE_MODEL", "ministral-8b-2412")
+        model = os.getenv("BASE_MODEL", "mistral-small-2506")
         client = MistralClient(api_key=api_key, model=model)
         return self.run_eval(
             model_fn=client.complete,

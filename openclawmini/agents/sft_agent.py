@@ -62,7 +62,7 @@ class SFTAgent:
     → model.train_sft() on CoreWeave GPU via W&B serverless.
 
     Args:
-        base_model:    ART model ID (e.g. "ministral-8b-2512"). Must match ART's
+        base_model:    ART model ID (e.g. "mistral-small-2506"). Must match ART's
                        supported models list — check `art list-models` if training fails.
         model_name:    ART model name (unique identifier within project)
         project:       W&B project name
@@ -72,7 +72,7 @@ class SFTAgent:
         wandb_api_key: Falls back to WANDB_API_KEY env var
     """
 
-    ART_BASE_MODEL = "ministral-8b-2512"
+    ART_BASE_MODEL = "mistral-small-2506"
     DEFAULT_PROJECT = "openclawmini"
 
     def __init__(
@@ -215,7 +215,7 @@ class SFTAgent:
     def from_config(cls, config, user_name: str = "") -> "SFTAgent":
         """Build SFTAgent from Config object."""
         # Use config's base_model directly as the ART model ID.
-        # ART's supported model list uses short names like "ministral-8b-2512".
+        # ART's supported model list uses short names like "mistral-small-2506".
         # Run `art list-models` to verify the exact ID if training fails.
         art_model = getattr(config.base_model, "model", cls.ART_BASE_MODEL)
 

@@ -1007,7 +1007,7 @@ def _run_stage_eval(config: Config, stage: str, model_name: str):
         model = art.TrainableModel(
             name=model_name,
             project=os.getenv("WANDB_PROJECT", "openclawmini"),
-            base_model=config.base_model.model,   # ministral-8b-2512
+            base_model=config.base_model.model,   # mistral-small-2506
         )
 
         async def _query():

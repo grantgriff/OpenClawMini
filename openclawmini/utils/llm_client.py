@@ -20,13 +20,13 @@ class MistralClient:
 
     Args:
         api_key: Mistral API key (defaults to MISTRAL_API_KEY env var)
-        model: Model ID (defaults to "ministral-8b-2412")
+        model: Model ID (defaults to "mistral-small-2506")
         system_prompt: Optional system prompt prepended to every call.
         max_tokens: Max output tokens per call.
         temperature: Sampling temperature (0 = deterministic).
     """
 
-    DEFAULT_MODEL = "ministral-8b-2412"
+    DEFAULT_MODEL = "mistral-small-2506"
     DEFAULT_SYSTEM = (
         "You are a helpful AI assistant. "
         "Answer questions concisely and accurately."
