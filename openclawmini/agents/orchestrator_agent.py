@@ -786,7 +786,7 @@ Decision guidelines:
 
         extractor = GeminiExtractor.from_env()
         evals_agent = EvalsAgent(gemini_extractor=extractor)
-        data_agent = DataCleansingAgent.from_config(config)
+        data_agent = DataCleansingAgent.from_env(config)
         sft_agent = SFTAgent.from_config(
             config, user_name=getattr(config.user, "name", "")
         )
