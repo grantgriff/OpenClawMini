@@ -849,7 +849,7 @@ def _run_sft_training(config: Config, sft_path: Path, memory) -> None:
     user_name = config.user.name or memory.user.name or "the user"
 
     console.print(f"\n[bold {COLORS['orange_2']}]🎯 SFT Training — ART Serverless[/]")
-    console.print(f"[dim]Model: mistralai/Ministral-8B-Instruct-2410  Data: {sft_path.name}[/]\n")
+    console.print(f"[dim]Model: {config.base_model.model}  Data: {sft_path.name}[/]\n")
     console.print(f"[dim]Compute runs on CoreWeave GPU via W&B ART. This may take several minutes.[/]\n")
 
     agent = SFTAgent.from_config(config, user_name=user_name)
@@ -893,7 +893,7 @@ def _run_stage_eval(config: Config, stage: str, model_name: str) -> None:
         model = art.TrainableModel(
             name=model_name,
             project=os.getenv("WANDB_PROJECT", "openclawmini"),
-            base_model="mistralai/Ministral-8B-Instruct-2410",
+            base_model=config.base_model.model,   # ministral-8b-2512
         )
 
         async def _query():

@@ -32,6 +32,8 @@ dependencies = [
     "datasimulator @ git+https://github.com/grantgriff/datasimulator.git",
     # Weights & Biases (eval metric logging)
     "wandb>=0.18",
+    # Weave — W&B LLM trace logging (@weave.op() on RULER + eval LLM calls)
+    "weave>=0.50",
     # ART — W&B/OpenPipe Serverless RL framework (SFT + GRPO via CoreWeave)
     "openpipe-art>=0.6",
 ]

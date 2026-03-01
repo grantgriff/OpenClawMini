@@ -5,6 +5,12 @@ Scores a model's response against the user's actual writing style
 using Gemini Flash as the judge. Returns a reward in [0.0, 1.0].
 
 Used by the GRPO Agent as the online reward function during training.
+
+Trace logging:
+  Every score() call is decorated with @weave.op() so W&B Weave captures
+  the full input/output trace (prompt sent, score returned, latency).
+  Traces appear in W&B under the "Traces" tab of the openclawmini project.
+  Requires WANDB_API_KEY — silently skips Weave init if not set.
 """
 
 from __future__ import annotations
@@ -12,6 +18,18 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional
+
+
+def _maybe_init_weave(project: str = "openclawmini") -> bool:
+    """Initialize W&B Weave for trace logging. Returns True if successful."""
+    if not os.getenv("WANDB_API_KEY", ""):
+        return False
+    try:
+        import weave  # type: ignore[import]
+        weave.init(project)
+        return True
+    except Exception:
+        return False
 
 
 # ── Writing style snapshot (compiled from memory at training start) ──────────
@@ -132,11 +150,15 @@ class RULER:
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
         temperature: float = 0.1,
+        weave_project: str = "openclawmini",
     ) -> None:
         self._api_key = api_key or os.getenv("GOOGLE_API_KEY", "")
         self._model = model
         self._temperature = temperature
         self._client = None
+        # Init Weave trace logging, then wrap score() with @weave.op()
+        if _maybe_init_weave(weave_project):
+            self._wrap_with_weave()
 
     def _get_client(self):
         if self._client is None:
@@ -152,11 +174,18 @@ class RULER:
         """
         Score a single model response against the user's style profile.
 
+        Decorated with @weave.op() when Weave is available — every call is
+        traced in W&B (input prompt, raw judge output, final score, latency).
+
         Returns a float in [0.0, 1.0]:
           1.0 = perfectly matches user's style
           0.5 = neutral (fallback on error)
           0.0 = completely misaligned
         """
+        return self._score_impl(response, profile)
+
+    def _score_impl(self, response: str, profile: WritingStyleProfile) -> float:
+        """Core scoring logic, called directly or via Weave-wrapped score()."""
         if not response or not response.strip():
             return 0.0
 
@@ -167,6 +196,14 @@ class RULER:
             return self._parse_score(result.text)
         except Exception:
             return 0.5  # neutral fallback
+
+    def _wrap_with_weave(self) -> None:
+        """Replace score() with a @weave.op()-wrapped version for trace logging."""
+        try:
+            import weave  # type: ignore[import]
+            self.score = weave.op()(self._score_impl)
+        except Exception:
+            pass  # Weave unavailable — use plain score()
 
     def score_batch(
         self,

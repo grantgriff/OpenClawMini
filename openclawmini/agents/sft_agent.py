@@ -62,23 +62,26 @@ class SFTAgent:
     → model.train_sft() on CoreWeave GPU via W&B serverless.
 
     Args:
-        base_model:    HuggingFace model ID (e.g. "mistralai/Ministral-8B-Instruct-2410")
+        base_model:    ART model ID (e.g. "ministral-8b-2512"). Must match ART's
+                       supported models list — check `art list-models` if training fails.
         model_name:    ART model name (unique identifier within project)
         project:       W&B project name
         learning_rate: SFT learning rate
+        epochs:        Number of training epochs passed to TrainSFTConfig
         use_serverless: True → CoreWeave via W&B; False → local GPU
         wandb_api_key: Falls back to WANDB_API_KEY env var
     """
 
-    HF_BASE_MODEL = "mistralai/Ministral-8B-Instruct-2410"
+    ART_BASE_MODEL = "ministral-8b-2512"
     DEFAULT_PROJECT = "openclawmini"
 
     def __init__(
         self,
-        base_model: str = HF_BASE_MODEL,
+        base_model: str = ART_BASE_MODEL,
         model_name: str = "openclawmini-sft",
         project: str = DEFAULT_PROJECT,
         learning_rate: float = 2e-5,
+        epochs: int = 3,
         use_serverless: bool = True,
         wandb_api_key: Optional[str] = None,
     ) -> None:
@@ -86,6 +89,7 @@ class SFTAgent:
         self.model_name = model_name
         self.project = project
         self.learning_rate = learning_rate
+        self.epochs = epochs
         self.use_serverless = use_serverless
         self._wandb_api_key = wandb_api_key or os.getenv("WANDB_API_KEY", "")
 
@@ -140,13 +144,16 @@ class SFTAgent:
         # Convert SFT samples → Trajectories (reward=1.0 for supervised data)
         trajectories = self._build_trajectories(samples)
 
-        # SFT config
+        # SFT config — pass epochs and learning_rate from TrainingConfig
         try:
-            sft_config = art.TrainSFTConfig(learning_rate=self.learning_rate)
-        except AttributeError:
+            sft_config = art.TrainSFTConfig(
+                learning_rate=self.learning_rate,
+                num_epochs=self.epochs,
+            )
+        except (AttributeError, TypeError):
             sft_config = None  # Older ART version — use defaults
 
-        print(f"  Starting SFT: {len(trajectories)} samples, lr={self.learning_rate}")
+        print(f"  Starting SFT: {len(trajectories)} samples, lr={self.learning_rate}, epochs={self.epochs}")
         await model.train_sft(trajectories, config=sft_config)
         print(f"  SFT complete. Model: {self.project}/{self.model_name}")
 
@@ -207,21 +214,22 @@ class SFTAgent:
     @classmethod
     def from_config(cls, config, user_name: str = "") -> "SFTAgent":
         """Build SFTAgent from Config object."""
-        # Map config model name to HuggingFace Hub ID
-        model_map = {
-            "ministral-8b-2512": "mistralai/Ministral-8B-Instruct-2410",
-            "ministral-8b-instruct-2410": "mistralai/Ministral-8B-Instruct-2410",
-        }
-        config_model = getattr(config.base_model, "model", cls.HF_BASE_MODEL)
-        hf_model = model_map.get(config_model.lower(), config_model)
+        # Use config's base_model directly as the ART model ID.
+        # ART's supported model list uses short names like "ministral-8b-2512".
+        # Run `art list-models` to verify the exact ID if training fails.
+        art_model = getattr(config.base_model, "model", cls.ART_BASE_MODEL)
 
-        name = f"openclawmini-sft-{user_name.lower().replace(' ', '-')}" if user_name else "openclawmini-sft"
+        name = (
+            f"openclawmini-sft-{user_name.lower().replace(' ', '-')}"
+            if user_name else "openclawmini-sft"
+        )
 
         return cls(
-            base_model=hf_model,
+            base_model=art_model,
             model_name=name,
             project=os.getenv("WANDB_PROJECT", cls.DEFAULT_PROJECT),
             learning_rate=getattr(config.training, "sft_learning_rate", 2e-5),
+            epochs=getattr(config.training, "sft_epochs", 3),
         )
 
     @classmethod
