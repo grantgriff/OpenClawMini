@@ -145,13 +145,18 @@ class DataCleansingAgent:
         if not memory.facts:
             raise ValueError("No facts in memory — nothing to generate SFT data from")
 
-        # Write structured profile to disk (DataSimulator requires a file source)
+        # Write source files to disk (DataSimulator requires file-based inputs)
+        # Pass both facts profile AND writing samples so DataSimulator has full context
         profile_path = self._write_memory_profile(memory)
+        sources = [str(profile_path)]
+        if memory.writing_samples or memory.posts:
+            samples_path = self._write_writing_samples(memory)
+            sources.append(str(samples_path))
 
         output_path = self.output_dir / f"sft_{tag}.jsonl"
 
         sdk = DataSimulator(
-            source=str(profile_path),
+            source=sources,
             data_type="sft",
             models={
                 "generator": "gemini-2.0-flash",
@@ -176,8 +181,12 @@ class DataCleansingAgent:
         )
         dataset.save(str(output_path))
 
-        # Parse the saved JSONL back into SFTSample objects
-        samples = _parse_sft_jsonl(output_path)
+        # Parse JSONL; inject our persona system message (replaces DataSimulator's generic one)
+        persona_system = (
+            f"You are {self.user_name}. Answer all questions about yourself honestly "
+            f"and naturally in first person. Draw only from what you know about yourself."
+        )
+        samples = _parse_sft_jsonl(output_path, persona_system=persona_system)
         return samples, output_path
 
     def _write_memory_profile(self, memory) -> Path:
@@ -211,6 +220,32 @@ class DataCleansingAgent:
         profile_path = self.output_dir / "memory_profile.txt"
         profile_path.write_text("\n".join(lines), encoding="utf-8")
         return profile_path
+
+    def _write_writing_samples(self, memory) -> Path:
+        """Write writing samples and posts as a plain-text file for DataSimulator."""
+        lines = [
+            f"# Writing Samples: {self.user_name}",
+            "",
+            f"The following are actual messages and posts written by {self.user_name}.",
+            "Use these to understand their natural voice, tone, and communication style.",
+            "",
+        ]
+        for i, sample in enumerate(memory.writing_samples[:60]):
+            cat = str(sample.category).split(".")[-1].replace("_", " ").title()
+            lines.append(f"## Writing Sample {i + 1} ({cat})")
+            if sample.context:
+                lines.append(f"Context: {sample.context}")
+            lines.append(sample.text)
+            lines.append("")
+
+        for i, post in enumerate(memory.posts[:20]):
+            lines.append(f"## LinkedIn Post {i + 1}")
+            lines.append(post.text)
+            lines.append("")
+
+        samples_path = self.output_dir / "memory_writing_samples.txt"
+        samples_path.write_text("\n".join(lines), encoding="utf-8")
+        return samples_path
 
     def _sft_domain_context(self, memory) -> str:
         fact_count = len(memory.facts)
@@ -330,8 +365,17 @@ class DataCleansingAgent:
 
 # ── Helpers ────────────────────────────────────────────────────
 
-def _parse_sft_jsonl(path: Path) -> list[SFTSample]:
-    """Read a DataSimulator-saved JSONL file into SFTSample objects."""
+def _parse_sft_jsonl(
+    path: Path,
+    persona_system: Optional[str] = None,
+) -> list[SFTSample]:
+    """
+    Read a DataSimulator-saved JSONL file into SFTSample objects.
+
+    If persona_system is provided, DataSimulator's generic system message is
+    replaced with the persona-framing system message (e.g. "You are Grant.
+    Answer questions about yourself in first person.").
+    """
     samples = []
     try:
         with open(path) as f:
@@ -342,12 +386,16 @@ def _parse_sft_jsonl(path: Path) -> list[SFTSample]:
                 try:
                     data = json.loads(line)
                     messages = data.get("messages", [])
-                    # DataSimulator may include a system message — keep user+assistant only
                     user_msg = next((m for m in messages if m.get("role") == "user"), None)
                     asst_msg = next((m for m in messages if m.get("role") == "assistant"), None)
                     if user_msg and asst_msg:
+                        # Build final message list
+                        msg_list = []
+                        if persona_system:
+                            msg_list.append({"role": "system", "content": persona_system})
+                        msg_list.extend([user_msg, asst_msg])
                         samples.append(SFTSample(
-                            messages=[user_msg, asst_msg],
+                            messages=msg_list,
                             quality_score=7.5,
                             category="factual",
                             source_fact_id="datasimulator",
