@@ -26,6 +26,8 @@ dependencies = [
     "requests>=2.31",
     # Web search (no API key required)
     "duckduckgo-search>=6.0",
+    # Mistral API (base model inference + fine-tuning)
+    "mistralai>=1.0",
 ]
 
 [project.scripts]

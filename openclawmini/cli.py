@@ -565,7 +565,7 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
 
 
 def _start_pipeline(config: Config, store=None, memory=None) -> None:
-    """Pipeline entry point — Data → SFT → GRPO (Tasks 6-8 wire in here)."""
+    """Pipeline entry point — generates eval set, optionally runs base eval."""
     console.print()
     stats = memory.stats() if memory else {}
     total = stats.get("total_items", 0)
@@ -579,16 +579,171 @@ def _start_pipeline(config: Config, store=None, memory=None) -> None:
         )
         return
 
+    # ── Generate / load eval set ───────────────────────────────
+    _generate_eval_set(config, memory)
+
+
+def _generate_eval_set(config: Config, memory) -> None:
+    """Generate the persistent eval set from memory (or load existing)."""
+    from openclawmini.agents.evals import EvalsAgent
+    from openclawmini.eval.eval_set import EvalSetStore
+
+    eval_store = EvalSetStore()
+    extractor = _build_gemini_extractor()
+    agent = EvalsAgent(gemini_extractor=extractor)
+
+    if eval_store.exists():
+        eval_set = eval_store.load()
+        stats = eval_set.stats() if eval_set else {}
+        console.print(
+            f"[{COLORS['orange_3']}]📊 Eval set loaded:[/]  "
+            f"[cyan]{stats.get('factual_questions', 0)}[/] factual questions, "
+            f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic prompts\n"
+        )
+        want_regen = Confirm.ask(
+            "  Regenerate eval set from updated memory?",
+            default=False,
+            console=console,
+        )
+        if not want_regen:
+            _show_pipeline_status(config, memory, eval_set, stats)
+            return
+        eval_set = agent.generate_eval_set(memory, force=True)
+    else:
+        console.print(f"\n[bold {COLORS['orange_2']}]📊 Generating Eval Set[/]")
+        console.print(f"[dim]Building factual questions + stylistic prompts from memory...[/]\n")
+        eval_set = agent.generate_eval_set(memory)
+
+    stats = eval_set.stats()
+    console.print(f"[bold {COLORS['orange_5']}]✓ Eval set ready![/]")
+    console.print(
+        f"  Factual questions:  [cyan]{stats['factual_questions']}[/]  "
+        f"(from {memory.stats()['facts']} facts)\n"
+        f"  Stylistic prompts:  [cyan]{stats['stylistic_prompts']}[/]  "
+        f"(from {memory.stats()['writing_samples']} writing samples)\n"
+        f"  Saved → [dim]data/evals/eval_set.json[/]\n"
+    )
+
+    _show_pipeline_status(config, memory, eval_set, stats)
+
+
+def _show_pipeline_status(config: Config, memory, eval_set, eval_stats: dict) -> None:
+    """Show pipeline readiness and offer base model eval."""
+    from openclawmini.agents.evals import EvalsAgent
+    from openclawmini.eval.router import decide_next_action
+
+    mem_stats = memory.stats()
+    total = mem_stats.get("total_items", 0)
+
     print_panel(
         f"[bold {COLORS['orange_5']}]Pipeline ready[/]\n\n"
-        f"  Memory:       [cyan]{total} items[/] collected\n"
-        f"  Orchestrator: [cyan]{config.orchestrator.model}[/]\n"
-        f"  Base model:   [cyan]{config.base_model.model}[/]\n"
-        f"  SFT samples:  [cyan]{config.training.sft_sample_count}[/]\n"
-        f"  GRPO targets: [cyan]{config.training.grpo_scenario_count}[/]\n\n"
-        f"[dim]Data generation → SFT → GRPO loop coming in Tasks 5-8.[/]",
+        f"  Memory:            [cyan]{total} items[/] collected\n"
+        f"  Facts:             [cyan]{mem_stats['facts']}[/]\n"
+        f"  Writing samples:   [cyan]{mem_stats['writing_samples']}[/]\n"
+        f"  Eval questions:    [cyan]{eval_stats.get('factual_questions', 0)}[/] factual  "
+        f"[cyan]{eval_stats.get('stylistic_prompts', 0)}[/] stylistic\n"
+        f"  Orchestrator:      [cyan]{config.orchestrator.model}[/]\n"
+        f"  Base model:        [cyan]{config.base_model.model}[/]\n"
+        f"  SFT samples:       [cyan]{config.training.sft_sample_count}[/]\n"
+        f"  GRPO targets:      [cyan]{config.training.grpo_scenario_count}[/]",
         title="🟠 Pipeline",
     )
+
+    # Offer base model eval
+    has_mistral_key = bool(os.getenv("MISTRAL_API_KEY", "").strip())
+    if not has_mistral_key:
+        console.print(
+            f"[dim]Tip: Add MISTRAL_API_KEY to .env to run the base model eval.[/]\n"
+        )
+        return
+
+    want_base_eval = Confirm.ask(
+        "  Run base model eval now? (calls Mistral API)",
+        default=False,
+        console=console,
+    )
+    if not want_base_eval:
+        console.print(f"[dim]Skipping base eval. Data generation → SFT → GRPO in Tasks 6-8.[/]\n")
+        return
+
+    _run_base_eval(config)
+
+
+def _run_base_eval(config: Config) -> None:
+    """Run base model eval and display results with routing recommendation."""
+    from openclawmini.agents.evals import EvalsAgent
+    from openclawmini.eval.router import decide_next_action
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+
+    agent = EvalsAgent.from_env()
+
+    console.print(f"\n[bold {COLORS['orange_2']}]🎯 Base Model Eval[/]")
+    console.print(f"[dim]Model: {config.base_model.model}  (Mistral API)[/]\n")
+
+    task_ids: dict = {}
+    progress_obj = None
+
+    def on_progress(dimension: str, current: int, total: int) -> None:
+        nonlocal progress_obj
+        if progress_obj is None:
+            return
+        if dimension not in task_ids:
+            task_ids[dimension] = progress_obj.add_task(
+                f"[bold {COLORS['orange_3']}]{dimension.title()} eval...[/]",
+                total=total,
+            )
+        progress_obj.update(
+            task_ids[dimension],
+            completed=current,
+            description=f"[bold {COLORS['orange_3']}]{dimension.title()}: {current}/{total}[/]",
+        )
+
+    try:
+        with Progress(
+            SpinnerColumn(style=COLORS["orange_2"]),
+            TextColumn("[bold {task.description}]"),
+            BarColumn(bar_width=40, style=COLORS["orange_4"], complete_style=COLORS["orange_2"]),
+            MofNCompleteColumn(),
+            console=console,
+            transient=False,
+        ) as prog:
+            progress_obj = prog
+            results = agent.run_base_eval(progress_callback=on_progress)
+
+        action = agent.get_routing_action(results, config)
+        results.recommended_action = action.type
+
+        # Display results panel
+        factual_bar = _ascii_bar(results.factual_accuracy)
+        stylistic_bar = _ascii_bar(results.stylistic_accuracy)
+        overall_bar = _ascii_bar(results.overall_accuracy)
+
+        print_panel(
+            f"[bold {COLORS['orange_5']}]BASE MODEL EVAL[/]\n\n"
+            f"  Factual Accuracy:    {results.factual_accuracy:.0%}  {factual_bar}\n"
+            f"  Stylistic Accuracy:  {results.stylistic_accuracy:.0%}  {stylistic_bar}\n"
+            f"  Overall:             {results.overall_accuracy:.0%}  {overall_bar}\n\n"
+            f"  ({results.factual_correct}/{results.factual_total} factual correct, "
+            f"{results.stylistic_total} stylistic scored)\n\n"
+            f"→ Routing decision: [bold cyan]{action.type.upper()}[/]\n"
+            f"  {action.reason}",
+            title="🟠 Eval Results",
+        )
+
+        console.print(
+            f"[dim]Results saved → data/evals/results/base_*.json[/]\n"
+            f"[dim]Data generation → SFT → GRPO coming in Tasks 6-8.[/]\n"
+        )
+
+    except Exception as e:
+        console.print(f"[red]Base eval failed: {e}[/]")
+        console.print(f"[dim]Check MISTRAL_API_KEY and eval set in data/evals/eval_set.json[/]")
+
+
+def _ascii_bar(value: float, width: int = 12) -> str:
+    """Return a simple ASCII progress bar for a 0-1 value."""
+    filled = round(value * width)
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
 
 
 @app.command("chat")
