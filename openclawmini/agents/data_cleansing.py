@@ -91,7 +91,7 @@ class DataCleansingAgent:
     #   generator → Gemini Pro  (data_generation model)
     #   verifier  → Gemini Flash (eval_judge / research_extraction model)
     DEFAULT_DS_GENERATOR = "gemini-2.5-pro"
-    DEFAULT_DS_VERIFIER  = "gemini-2.5-flash"
+    DEFAULT_DS_VERIFIER  = "gemini-2.0-flash-001"
 
     def __init__(
         self,
@@ -184,7 +184,7 @@ class DataCleansingAgent:
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             quality_threshold=self.quality_threshold,
             max_cost=15.0,
-            batch_size=10,
+            batch_size=4,
             parallel_batches=2,
             interactive=False,
             checkpoint_dir=str(self.output_dir / "checkpoints"),
@@ -327,7 +327,7 @@ class DataCleansingAgent:
                 openai_api_key=os.getenv("OPENAI_API_KEY"),
                 quality_threshold=self.quality_threshold,
                 max_cost=3.0,      # small budget — prompts only
-                batch_size=10,
+                batch_size=4,
                 parallel_batches=2,
                 interactive=False,
                 domain_context=(
@@ -448,7 +448,7 @@ class DataCleansingAgent:
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             quality_threshold=self.quality_threshold,
             max_cost=8.0,
-            batch_size=10,
+            batch_size=4,
             parallel_batches=2,
             interactive=False,
             checkpoint_dir=str(self.output_dir / "checkpoints"),
