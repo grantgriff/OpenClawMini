@@ -1,0 +1,392 @@
+"""OpenClawMini CLI - Typer app with retro orange terminal styling."""
+
+from __future__ import annotations
+
+import os
+import sys
+import webbrowser
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, IntPrompt, Prompt
+
+from openclawmini.config import (
+    DATA_GEN_OPTIONS,
+    ORCHESTRATOR_OPTIONS,
+    RESEARCH_OPTIONS,
+    Config,
+    TrainingConfig,
+    UserConfig,
+    load_config,
+    load_env,
+    save_config,
+    save_env,
+)
+from openclawmini.styling import (
+    COLORS,
+    console,
+    print_banner,
+    print_panel,
+    print_step,
+    print_success,
+    print_progress_table,
+)
+
+app = typer.Typer(
+    name="openclawmini",
+    help="Your Personal AI That Learns To Be You.",
+    add_completion=False,
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+
+
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+
+def _divider() -> None:
+    console.print(f"[{COLORS['orange_4']}]{'═' * 72}[/]")
+
+
+def _prompt_model_choice(title: str, options: list[dict]) -> dict:
+    """Display a numbered model-selection menu and return the chosen option."""
+    console.print(f"\n[bold {COLORS['orange_2']}]{title}:[/]")
+    for i, opt in enumerate(options, 1):
+        default_tag = " [dim]← Default[/]" if opt.get("default") else ""
+        console.print(f"  [{COLORS['orange_4']}][{i}][/] {opt['label']}{default_tag}")
+
+    while True:
+        raw = Prompt.ask(
+            f"  [dim]Choice[/]",
+            default="1",
+            console=console,
+        )
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(options):
+                return options[idx]
+        except ValueError:
+            pass
+        console.print(f"  [red]Please enter a number between 1 and {len(options)}[/]")
+
+
+def _prompt_float(prompt: str, default: float) -> float:
+    while True:
+        raw = Prompt.ask(prompt, default=str(default), console=console)
+        try:
+            return float(raw)
+        except ValueError:
+            console.print("  [red]Please enter a valid number[/]")
+
+
+def _prompt_int(prompt: str, default: int) -> int:
+    while True:
+        raw = Prompt.ask(prompt, default=str(default), console=console)
+        try:
+            return int(raw)
+        except ValueError:
+            console.print("  [red]Please enter a whole number[/]")
+
+
+# ─────────────────────────────────────────────────────────────
+# OAuth stubs
+# ─────────────────────────────────────────────────────────────
+
+def _setup_gmail_oauth(env_vars: dict) -> dict:
+    """Walk user through Gmail OAuth setup (stub - real auth in Task 3)."""
+    console.print(f"\n[{COLORS['orange_3']}]To access your sent emails, OpenClawMini needs read-only Gmail access.[/]")
+    console.print(f"[dim]Scope: https://www.googleapis.com/auth/gmail.readonly[/]")
+    console.print(f"[dim]This only allows READING emails — no send/delete/modify permissions.[/]\n")
+
+    client_id = Prompt.ask(
+        f"  [bold]Gmail Client ID[/] [dim](from Google Cloud Console)[/]",
+        default="",
+        console=console,
+    )
+    client_secret = Prompt.ask(
+        f"  [bold]Gmail Client Secret[/]",
+        default="",
+        password=True,
+        console=console,
+    )
+
+    if client_id and client_secret:
+        env_vars["GMAIL_CLIENT_ID"] = client_id
+        env_vars["GMAIL_CLIENT_SECRET"] = client_secret
+        env_vars["GMAIL_REDIRECT_URI"] = "http://localhost:8080/callback"
+        env_vars["GMAIL_TOKEN_PATH"] = "./data/gmail_token.json"
+
+        console.print(f"\n[{COLORS['orange_4']}]OAuth flow will run when you execute [bold]openclawmini run[/].[/]")
+        console.print(f"[dim]Your browser will open to authorize Gmail access at that time.[/]")
+        print_success("Gmail credentials saved.")
+    else:
+        console.print(f"[dim]Skipping Gmail — you can add credentials later in .env[/]")
+
+    return env_vars
+
+
+def _setup_linkedin_oauth(env_vars: dict) -> dict:
+    """Walk user through LinkedIn OAuth setup (stub - real auth in Task 3)."""
+    console.print(f"\n[{COLORS['orange_3']}]To access your LinkedIn profile and posts, we need read-only API access.[/]")
+    console.print(f"[dim]Scopes: r_liteprofile, r_emailaddress, r_member_social (read only — no posting)[/]\n")
+
+    client_id = Prompt.ask(
+        f"  [bold]LinkedIn Client ID[/] [dim](from LinkedIn Developer Portal)[/]",
+        default="",
+        console=console,
+    )
+    client_secret = Prompt.ask(
+        f"  [bold]LinkedIn Client Secret[/]",
+        default="",
+        password=True,
+        console=console,
+    )
+
+    if client_id and client_secret:
+        env_vars["LINKEDIN_CLIENT_ID"] = client_id
+        env_vars["LINKEDIN_CLIENT_SECRET"] = client_secret
+        console.print(f"\n[{COLORS['orange_4']}]LinkedIn OAuth flow will run when you execute [bold]openclawmini run[/].[/]")
+        print_success("LinkedIn credentials saved.")
+    else:
+        console.print(f"[dim]Skipping LinkedIn — you can add credentials later in .env[/]")
+
+    return env_vars
+
+
+# ─────────────────────────────────────────────────────────────
+# Commands
+# ─────────────────────────────────────────────────────────────
+
+@app.command("init")
+def cmd_init() -> None:
+    """Interactive first-run setup: connect data sources, configure models."""
+    print_banner()
+    print_panel(
+        f"[bold {COLORS['orange_5']}]Welcome! Let's get you set up.[/]",
+        title="🟠 OpenClawMini Setup",
+    )
+
+    config = Config()
+    env_vars: dict[str, str] = {}
+
+    # ── Step 1: User info ──────────────────────────────────────
+    print_step(1, "User Information")
+    config.user.name = Prompt.ask("  [bold]Full name[/]", console=console)
+    config.user.email = Prompt.ask("  [bold]Email address[/]", console=console)
+
+    # ── Step 2: Data sources ───────────────────────────────────
+    print_step(2, "Data Sources")
+    console.print(f"  [{COLORS['orange_4']}]Which sources should we use to learn about you?[/]\n")
+
+    use_gmail = Confirm.ask("  [bold]Gmail[/] (sent emails for writing samples)", default=True, console=console)
+    use_linkedin = Confirm.ask("  [bold]LinkedIn[/] (profile and posts)", default=True, console=console)
+    use_web = Confirm.ask("  [bold]Web search[/] (public mentions)", default=True, console=console)
+    use_files = Confirm.ask(
+        "  [bold]File upload[/] (ChatGPT/Claude exports, conversation logs)",
+        default=False,
+        console=console,
+    )
+
+    config.user.data_sources = {
+        "gmail": use_gmail,
+        "linkedin": use_linkedin,
+        "web_search": use_web,
+        "file_upload": use_files,
+    }
+
+    # ── Step 3: Gmail OAuth ────────────────────────────────────
+    if use_gmail:
+        print_step(3, "Connect Gmail")
+        env_vars = _setup_gmail_oauth(env_vars)
+    else:
+        console.print(f"\n[dim]Skipping Gmail setup.[/]")
+
+    # ── Step 4: LinkedIn OAuth ─────────────────────────────────
+    if use_linkedin:
+        print_step(4, "Connect LinkedIn (Optional)")
+        env_vars = _setup_linkedin_oauth(env_vars)
+    else:
+        console.print(f"\n[dim]Skipping LinkedIn setup.[/]")
+
+    # ── Step 5: Training config ────────────────────────────────
+    print_step(5, "Training Configuration")
+    _divider()
+    config.training.sft_sample_count = _prompt_int(
+        f"  [bold]SFT training samples[/] [dim][default: 200][/]", 200
+    )
+    config.training.grpo_scenario_count = _prompt_int(
+        f"  [bold]GRPO scenarios[/] [dim][default: 100][/]", 100
+    )
+    config.training.quality_threshold = _prompt_float(
+        f"  [bold]Quality threshold (1-10)[/] [dim][default: 7.0][/]", 7.0
+    )
+    config.training.sft_factual_threshold = _prompt_float(
+        f"  [bold]Target factual accuracy for SFT → GRPO handoff[/] [dim][default: 0.70][/]", 0.70
+    )
+    config.training.final_target_accuracy = _prompt_float(
+        f"  [bold]Final target persona accuracy[/] [dim][default: 0.80][/]", 0.80
+    )
+
+    # ── Step 6: Model configuration ───────────────────────────
+    print_step(6, "Model Configuration")
+    _divider()
+
+    use_defaults = Confirm.ask("  Use default model configuration?", default=True, console=console)
+
+    if not use_defaults:
+        orch = _prompt_model_choice("ORCHESTRATOR AGENT (Autonomous reasoning)", ORCHESTRATOR_OPTIONS)
+        research = _prompt_model_choice("RESEARCH EXTRACTION (Fact extraction)", RESEARCH_OPTIONS)
+        datagen = _prompt_model_choice("DATA GENERATION (Training data creation)", DATA_GEN_OPTIONS)
+
+        from openclawmini.config import ModelConfig
+        config.orchestrator = ModelConfig(orch["provider"], orch["model"])
+        config.research_extraction = ModelConfig(research["provider"], research["model"])
+        config.data_generation = ModelConfig(datagen["provider"], datagen["model"])
+
+    # Show summary
+    console.print(f"\n[bold {COLORS['orange_3']}]Model Summary:[/]")
+    console.print(f"  Orchestrator:  [cyan]{config.orchestrator.model}[/]")
+    console.print(f"  Research:      [cyan]{config.research_extraction.model}[/]")
+    console.print(f"  Data Gen:      [cyan]{config.data_generation.model}[/]")
+    console.print(f"  GRPO Judge:    [cyan]{config.grpo_judge.model}[/]")
+    console.print(f"  Eval Judge:    [cyan]{config.eval_judge.model}[/]")
+    console.print(f"  Base Model:    [cyan]{config.base_model.model}[/]")
+
+    # ── API keys ───────────────────────────────────────────────
+    console.print(f"\n[bold {COLORS['orange_3']}]API Keys:[/]")
+    console.print(f"  [{COLORS['orange_4']}]Enter your API keys (press Enter to skip):[/]\n")
+
+    for key_name, label in [
+        ("ANTHROPIC_API_KEY", "Anthropic (Claude)"),
+        ("GOOGLE_API_KEY", "Google (Gemini)"),
+        ("MISTRAL_API_KEY", "Mistral (REQUIRED for fine-tuning)"),
+        ("WANDB_API_KEY", "W&B (REQUIRED for logging)"),
+        ("OPENAI_API_KEY", "OpenAI (optional)"),
+    ]:
+        existing = os.getenv(key_name, "")
+        if existing:
+            console.print(f"  [dim]{label}: already set ✓[/]")
+        else:
+            val = Prompt.ask(f"  [bold]{label}[/]", default="", password=True, console=console)
+            if val:
+                env_vars[key_name] = val
+
+    for key_name, label, default in [
+        ("WANDB_ENTITY", "W&B entity/username", ""),
+        ("WANDB_PROJECT", "W&B project name", "openclawmini"),
+    ]:
+        val = Prompt.ask(f"  [bold]{label}[/]", default=default, console=console)
+        if val:
+            env_vars[key_name] = val
+
+    # ── Write files ────────────────────────────────────────────
+    Path("data").mkdir(exist_ok=True)
+    save_config(config, "config.yaml")
+    save_env(env_vars, ".env")
+
+    console.print()
+    print_panel(
+        f"[bold {COLORS['orange_5']}]✓ Setup complete![/]\n\n"
+        f"Run [bold cyan]openclawmini run[/] to start training.",
+        title="🟠 OpenClawMini",
+    )
+
+
+@app.command("run")
+def cmd_run() -> None:
+    """Start or continue the training pipeline."""
+    load_env()
+    print_banner()
+
+    memory_path = Path("data/memory.json")
+    config_path = Path("config.yaml")
+
+    if not config_path.exists():
+        print_panel(
+            f"[red]No config.yaml found.[/]\n\nRun [bold cyan]openclawmini init[/] first.",
+            title="Error",
+            style="red",
+        )
+        raise typer.Exit(1)
+
+    config = load_config("config.yaml")
+
+    if memory_path.exists():
+        # Continuing session
+        print_panel(
+            f"[bold {COLORS['orange_5']}]OpenClawMini — Continuing Training[/]\n\n"
+            f"Found existing memory for: [bold cyan]{config.user.name or 'Unknown'}[/]",
+            title="🟠 OpenClawMini",
+        )
+
+        console.print(f"\n[bold {COLORS['orange_2']}]What would you like to do?[/]")
+        console.print(f"  [{COLORS['orange_4']}][1][/] Continue training with existing memory")
+        console.print(f"  [{COLORS['orange_4']}][2][/] Refresh memory (research again + merge)")
+        console.print(f"  [{COLORS['orange_4']}][3][/] Upload new files to add to memory")
+        console.print(f"  [{COLORS['orange_4']}][4][/] Start fresh (delete memory and restart)\n")
+
+        choice = _prompt_int("  Your choice", 1)
+        _handle_run_choice(choice, config)
+    else:
+        # First run
+        print_panel(
+            f"[bold {COLORS['orange_5']}]OpenClawMini — First Run[/]\n\n"
+            f"No memory found. Starting fresh research pipeline.",
+            title="🟠 OpenClawMini",
+        )
+        _start_pipeline(config)
+
+
+def _handle_run_choice(choice: int, config: Config) -> None:
+    if choice == 1:
+        console.print(f"\n[{COLORS['orange_3']}]Continuing with existing memory...[/]")
+        _start_pipeline(config)
+    elif choice == 2:
+        console.print(f"\n[{COLORS['orange_3']}]Refreshing memory... (Research Agent — coming in Task 3)[/]")
+        _start_pipeline(config)
+    elif choice == 3:
+        console.print(f"\n[{COLORS['orange_3']}]File upload... (Research Agent — coming in Task 3)[/]")
+        files = Prompt.ask("  File paths (comma-separated)", default="", console=console)
+        if files:
+            console.print(f"[dim]Files queued: {files}[/]")
+        _start_pipeline(config)
+    elif choice == 4:
+        if Confirm.ask("  [red]Delete all memory and restart?[/]", default=False, console=console):
+            Path("data/memory.json").unlink(missing_ok=True)
+            console.print(f"[{COLORS['orange_3']}]Memory cleared. Starting fresh.[/]")
+            _start_pipeline(config)
+        else:
+            console.print("[dim]Cancelled.[/]")
+    else:
+        console.print("[red]Invalid choice.[/]")
+        raise typer.Exit(1)
+
+
+def _start_pipeline(config: Config) -> None:
+    """Stub pipeline entry point — real orchestration comes in Task 8."""
+    console.print()
+    print_panel(
+        f"[bold {COLORS['orange_5']}]Pipeline starting...[/]\n\n"
+        f"[dim]Full multi-agent pipeline will be implemented in Tasks 2-8.[/]\n\n"
+        f"  Orchestrator: [cyan]{config.orchestrator.model}[/]\n"
+        f"  Base model:   [cyan]{config.base_model.model}[/]\n"
+        f"  SFT samples:  [cyan]{config.training.sft_sample_count}[/]\n"
+        f"  GRPO targets: [cyan]{config.training.grpo_scenario_count}[/]",
+        title="🟠 Pipeline",
+    )
+
+
+@app.command("chat")
+def cmd_chat() -> None:
+    """Chat with your trained personalized model."""
+    load_env()
+    print_banner()
+    print_panel(
+        f"[bold {COLORS['orange_5']}]Chat mode coming soon![/]\n\n"
+        f"[dim]Run [bold cyan]openclawmini run[/] first to train your model.[/]",
+        title="🟠 OpenClawMini Chat",
+    )

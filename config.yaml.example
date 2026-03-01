@@ -1,0 +1,54 @@
+models:
+  # Orchestrator agent (autonomous, LLM reasoning)
+  orchestrator:
+    provider: "anthropic"
+    model: "claude-opus-4-5-20251101"
+
+  # Research agent (fact extraction from emails/web/logs)
+  research_extraction:
+    provider: "google"
+    model: "gemini-2.5-flash"
+
+  # Data generation (DataSimulator)
+  data_generation:
+    provider: "google"
+    model: "gemini-2.5-pro"
+
+  # GRPO reward judge (RULER)
+  grpo_judge:
+    provider: "google"
+    model: "gemini-2.5-flash"
+
+  # Eval judge (factual + stylistic scoring)
+  eval_judge:
+    provider: "google"
+    model: "gemini-2.5-flash"
+
+  # Base model to fine-tune
+  base_model:
+    provider: "mistral"
+    model: "ministral-8b-2512"
+
+training:
+  sft_sample_count: 200
+  grpo_scenario_count: 100
+  quality_threshold: 7.0
+  sft_factual_threshold: 0.70
+  final_target_accuracy: 0.80
+  sft_epochs: 3
+  sft_learning_rate: 0.00002
+  grpo_steps: 100
+  grpo_trajectories_per_scenario: 4
+
+storage:
+  memory_file_path: "./data/memory.json"
+  memory_storage_type: "file"
+
+user:
+  name: ""
+  email: ""
+  data_sources:
+    gmail: false
+    linkedin: false
+    web_search: true
+    file_upload: false

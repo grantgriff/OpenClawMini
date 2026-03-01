@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Data (generated, not tracked)
+data/memory.json
+data/training/*.jsonl
+data/evals/results_*.json
+checkpoints/
+uploads/
+
+# W&B
+wandb/
+
+# Editor
+.vscode/
+.idea/
+*.swp
