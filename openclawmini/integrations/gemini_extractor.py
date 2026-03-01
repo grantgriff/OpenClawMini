@@ -147,9 +147,12 @@ Focus on: job/role, company, location, education, skills, interests, achievement
 Include any fact you can reasonably infer from context, even if only partially stated. More data is better.
 Aim for at least 3-5 facts per email if any are present.
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works at [company]" not "[Name] works at [company]". Use "Has a degree in..." not "[Name] has a degree in...".
+
 Return a JSON array (empty [] if truly nothing found) of fact objects:
 [
-  {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  {{"content": "Specific fact about the person (no name)", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
 ]
 
@@ -189,9 +192,12 @@ Focus on: job/role, company, location, education, skills, interests, achievement
 Include partial or implied facts. Skip only clearly irrelevant generic content.
 Aim for at least 5 facts if any are present.
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works at [company]" not "[Name] works at [company]".
+
 Return a JSON array (empty [] if truly nothing found):
 [
-  {{"content": "Specific fact", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  {{"content": "Specific fact (no name)", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
 ]
 
@@ -242,9 +248,12 @@ Extract facts across ALL categories:
 - personal: name, contact info (no SSN/CC), career goals, personal interests
 - interests: hobbies, volunteer work, side projects, communities
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works as a Software Engineer at Acme" not "[Name] works as a Software Engineer at Acme".
+
 Return a JSON array with ALL extracted facts:
 [
-  {{"content": "Specific fact", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  {{"content": "Specific fact (no name)", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
 ]
 
@@ -312,9 +321,12 @@ Focus on: job/role, company, location, education, skills, interests, achievement
 Deduplicate — include each unique fact only once.
 Aim for at least 10-20 unique facts across the batch.
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works at [company]" not "[Name] works at [company]".
+
 Return a JSON array (empty [] if truly nothing found):
 [
-  {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  {{"content": "Specific fact about the person (no name)", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
 ]
 
@@ -350,9 +362,12 @@ Extract ALL factual information about the MESSAGE AUTHOR — be generous and inc
 Focus on: job/role, company, location, education, skills, interests, achievements, personal background.
 Include any fact that can be reasonably inferred from context. More data is better.
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works at [company]" not "[Name] works at [company]".
+
 Return a JSON array (empty [] if truly nothing found):
 [
-  {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
+  {{"content": "Specific fact about the person (no name)", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
 ]
 

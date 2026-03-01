@@ -182,11 +182,11 @@ class EvalsAgent:
         Convenience method: run eval against the base Ministral 8B model
         via the Mistral API (no fine-tuning required).
 
-        Requires MISTRAL_API_KEY in environment.
+        Requires HF_TOKEN in environment.
         """
         from openclawmini.utils.llm_client import OpenPipeClient
 
-        api_key = os.getenv("OPENPIPE_API_KEY", "").strip()
+        api_key = os.getenv("HF_TOKEN", "").strip()
         model = os.getenv("BASE_MODEL", "OpenPipe/Qwen3-14B-Instruct")
         client = OpenPipeClient(api_key=api_key, model=model)
         return self.run_eval(

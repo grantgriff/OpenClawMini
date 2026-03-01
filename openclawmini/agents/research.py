@@ -842,8 +842,11 @@ Content: {page_text[:2500]}
 Focus exclusively on {category}-related facts: {', '.join(_CATEGORY_QUERIES.get(category, ['background'])[:1])}.
 Be generous — include any fact you can reasonably infer.
 
+IMPORTANT: Write each fact as a generic statement without including the person's name.
+Use "Works at [company]" not "{user_name} works at [company]".
+
 Return JSON array:
-[{{"content": "fact text", "category": "{category}", "confidence": 0.0-1.0}}]
+[{{"content": "fact text (no name)", "category": "{category}", "confidence": 0.0-1.0}}]
 JSON only:"""
 
     try:

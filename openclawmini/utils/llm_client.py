@@ -122,23 +122,23 @@ class MistralClient:
 
 class OpenPipeClient:
     """
-    Thin wrapper around OpenPipe's OpenAI-compatible API for model inference.
+    Thin wrapper around HuggingFace's OpenAI-compatible serverless inference API.
 
     Used by EvalsAgent and OrchestratorAgent to run the base model eval
-    against OpenPipe/Qwen3-14B-Instruct before any fine-tuning.
+    against OpenPipe/Qwen3-14B-Instruct (a HuggingFace model) before fine-tuning.
 
-    Requires OPENPIPE_API_KEY in environment.
+    No separate OpenPipe API key needed — uses HF_TOKEN from environment.
 
     Args:
-        api_key: OpenPipe API key (defaults to OPENPIPE_API_KEY env var)
-        model: Model ID (defaults to "OpenPipe/Qwen3-14B-Instruct")
+        api_key: HuggingFace token (defaults to HF_TOKEN env var)
+        model: HuggingFace model ID (defaults to "OpenPipe/Qwen3-14B-Instruct")
         system_prompt: Optional system prompt prepended to every call.
         max_tokens: Max output tokens per call.
         temperature: Sampling temperature (0 = deterministic).
     """
 
     DEFAULT_MODEL = "OpenPipe/Qwen3-14B-Instruct"
-    BASE_URL = "https://app.openpipe.ai/api/v1"
+    BASE_URL = "https://api-inference.huggingface.co/v1"
     DEFAULT_SYSTEM = (
         "You are a helpful AI assistant. "
         "Answer questions concisely and accurately."
@@ -152,7 +152,7 @@ class OpenPipeClient:
         max_tokens: int = 512,
         temperature: float = 0.3,
     ) -> None:
-        self.api_key = api_key or os.getenv("OPENPIPE_API_KEY", "").strip()
+        self.api_key = api_key or os.getenv("HF_TOKEN", "").strip()
         self.model = model or os.getenv("BASE_MODEL", self.DEFAULT_MODEL)
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM
         self.max_tokens = max_tokens
@@ -168,7 +168,7 @@ class OpenPipeClient:
     def complete(self, prompt: str) -> str:
         if not self.api_key:
             raise RuntimeError(
-                "OPENPIPE_API_KEY not set. Add it to .env or run openclawmini init."
+                "HF_TOKEN not set. Add it to .env or run openclawmini init."
             )
         client = self._get_client()
         response = client.chat.completions.create(
@@ -189,7 +189,7 @@ class OpenPipeClient:
             else "Respond naturally in your own voice."
         )
         if not self.api_key:
-            raise RuntimeError("OPENPIPE_API_KEY not set.")
+            raise RuntimeError("HF_TOKEN not set.")
         client = self._get_client()
         response = client.chat.completions.create(
             model=self.model,
@@ -206,6 +206,6 @@ class OpenPipeClient:
     def from_env(cls, model: Optional[str] = None) -> "OpenPipeClient":
         """Build from environment variables."""
         return cls(
-            api_key=os.getenv("OPENPIPE_API_KEY", "").strip(),
+            api_key=os.getenv("HF_TOKEN", "").strip(),
             model=model or os.getenv("BASE_MODEL", cls.DEFAULT_MODEL),
         )

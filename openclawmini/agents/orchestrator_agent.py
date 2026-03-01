@@ -556,7 +556,7 @@ Decision guidelines:
         """Build model inference function for the current training stage."""
         if self._current_stage == "base":
             from openclawmini.utils.llm_client import OpenPipeClient
-            api_key = os.getenv("OPENPIPE_API_KEY", "")
+            api_key = os.getenv("HF_TOKEN", "")
             client = OpenPipeClient(api_key=api_key, model=self.config.base_model.model)
             return client.complete
 
