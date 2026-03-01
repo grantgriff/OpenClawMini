@@ -568,6 +568,57 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
         for err in result.errors:
             console.print(f"  [dim]• {err}[/]")
 
+    # ── Document upload ────────────────────────────────────────
+    console.print(
+        f"\n[bold {COLORS['orange_2']}]📄 Documents[/]\n"
+        f"[dim]Share a resume, LinkedIn PDF, bio, or any text file to give the model "
+        f"richer personal context.[/]\n"
+    )
+    if Confirm.ask("  Upload documents now?", default=True, console=console):
+        _collect_document_files(store, memory, extractor)
+
+
+def _collect_document_files(store, memory, extractor) -> None:
+    """Prompt for file paths and process uploaded documents into memory."""
+    from openclawmini.agents.research import ResearchAgent
+
+    console.print(
+        f"[dim]Enter file paths one at a time (tab-complete works). "
+        f"Press Enter with no input when done.[/]\n"
+    )
+    file_paths: list[str] = []
+    while True:
+        raw = Prompt.ask(
+            f"  [bold]File path[/] [dim](blank to finish)[/]",
+            default="",
+            console=console,
+        )
+        if not raw.strip():
+            break
+        p = Path(raw.strip()).expanduser()
+        if not p.exists():
+            console.print(f"  [red]File not found: {p}[/]")
+            continue
+        file_paths.append(str(p))
+        console.print(f"  [dim]Added: {p.name}[/]")
+
+    if not file_paths:
+        console.print(f"[{COLORS['orange_4']}]No documents added.[/]\n")
+        return
+
+    agent = ResearchAgent(store=store, memory=memory, llm_client=extractor)
+    console.print(f"\n[{COLORS['orange_3']}]Processing {len(file_paths)} document(s)...[/]")
+    doc_result = agent.process_uploaded_files(file_paths)
+    store.save(memory)
+
+    if doc_result.total_added > 0:
+        console.print(f"\n[bold {COLORS['orange_5']}]✓ Documents processed![/]")
+        console.print(doc_result.summary())
+    else:
+        console.print(f"[{COLORS['orange_4']}]No new items extracted from documents.[/]")
+    for err in doc_result.errors:
+        console.print(f"  [dim red]• {err}[/]")
+
 
 def _start_pipeline(config: Config, store=None, memory=None) -> None:
     """Pipeline entry point — generates eval set, optionally runs base eval."""

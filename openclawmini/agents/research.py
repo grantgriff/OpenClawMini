@@ -392,13 +392,17 @@ class ResearchAgent:
             )
             return
 
-        queries = build_search_queries(name, email, linkedin_url)
+        # Generate 20 personalized queries with Gemini; fall back to static list
+        queries = (
+            _generate_web_search_queries(extractor, name, email, self.memory, count=20)
+            or build_search_queries(name, email, linkedin_url)
+        )
         seen_urls: set[str] = set()
-        total_queries = min(len(queries), 8)
+        total_queries = min(len(queries), 20)
 
         # ── Collect all URLs from search queries ──────────────
         all_results = []
-        for i, query in enumerate(queries[:8]):
+        for i, query in enumerate(queries[:20]):
             if progress_callback:
                 progress_callback("web_search", i + 1, total_queries)
             sr = search(query, max_results=10)
@@ -561,30 +565,21 @@ class ResearchAgent:
 
     def _get_extractor(self, result: ResearchResult, context: str):
         """
-        Return an extractor with extract_facts_from_web(), building one from env if needed.
-        Tries Gemini first (higher quality), then Mistral as fallback.
-        Appends an error and returns None only if neither key is available.
+        Return a GeminiExtractor, building one from env if llm_client wasn't set.
+        Appends an error and returns None if GOOGLE_API_KEY is not available.
         """
         if self._extractor and hasattr(self._extractor, "extract_facts_from_web"):
             return self._extractor
 
-        # Try Gemini first
         from openclawmini.integrations.gemini_extractor import GeminiExtractor
         extractor = GeminiExtractor.from_env()
         if extractor is not None:
             self._extractor = extractor
             return extractor
 
-        # Fall back to Mistral
-        from openclawmini.integrations.mistral_extractor import MistralExtractor
-        extractor = MistralExtractor.from_env()
-        if extractor is not None:
-            self._extractor = extractor
-            return extractor
-
         result.errors.append(
-            f"{context} requires GOOGLE_API_KEY or MISTRAL_API_KEY. "
-            "Add one to .env or run openclawmini init."
+            f"{context} requires GOOGLE_API_KEY. "
+            "Add it to .env or run openclawmini init."
         )
         return None
 
@@ -769,3 +764,62 @@ JSON only:"""
         return facts
     except Exception:
         return []
+
+
+def _generate_web_search_queries(
+    extractor,
+    user_name: str,
+    user_email: str = "",
+    memory=None,
+    count: int = 20,
+) -> list[str]:
+    """
+    Use Gemini Flash to generate personalized web search queries for the user.
+
+    Returns up to `count` queries. Falls back to an empty list on any error
+    so the caller can fall back to static queries from build_search_queries().
+    """
+    import json
+    import re
+
+    if extractor is None:
+        return []
+
+    # Give Gemini context: name, email domain, and a sample of known facts
+    known_facts = ""
+    if memory and getattr(memory, "facts", None):
+        sample = [f.content for f in memory.facts[:10]]
+        if sample:
+            known_facts = "\nKnown facts so far:\n" + "\n".join(f"- {f}" for f in sample)
+
+    email_hint = ""
+    if user_email and "@" in user_email:
+        domain = user_email.split("@")[-1]
+        if domain not in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com"}:
+            email_hint = f"\nEmail domain: {domain}"
+
+    prompt = (
+        f'Generate {count} diverse web search queries to find public information '
+        f'about a person named "{user_name}".{email_hint}'
+        f'{known_facts}\n\n'
+        f"Goal: Discover verifiable facts about their career, education, skills, "
+        f"achievements, background, interests, and projects.\n"
+        f"Use varied query styles: LinkedIn profiles, interviews, GitHub repos, "
+        f"news mentions, company bios, conference speaker bios, publications, etc.\n"
+        f"Target a different angle with each query — don't repeat similar queries.\n\n"
+        f'Return ONLY a JSON array of {count} search query strings, no explanation:\n'
+        f'["query 1", "query 2", ...]'
+    )
+
+    try:
+        raw = extractor.complete(prompt)
+        raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if match:
+            queries = json.loads(match.group())
+            if isinstance(queries, list) and queries:
+                return [str(q).strip() for q in queries if str(q).strip()][:count]
+    except Exception:
+        pass
+
+    return []
