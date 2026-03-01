@@ -526,18 +526,28 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
     task_id = None
     progress = None
+    current_stage = None
+
+    _STAGE_LABEL = {
+        "gmail": ("📧", "emails"),
+        "web_search": ("🔍", "queries"),
+        "linkedin": ("💼", "profiles"),
+    }
 
     def on_progress(stage: str, current: int, total: int) -> None:
-        nonlocal task_id, progress
+        nonlocal task_id, progress, current_stage
         if progress is None:
             return
-        if task_id is None:
-            task_id = progress.add_task(
-                f"[bold {COLORS['orange_3']}]Fetching {stage} emails...[/]",
-                total=total,
-            )
-        progress.update(task_id, completed=current,
-                        description=f"[bold {COLORS['orange_3']}]📧 {stage}: {current}/{total} emails[/]")
+        icon, unit = _STAGE_LABEL.get(stage, ("⏳", "items"))
+        if stage != current_stage:
+            # New stage — create a fresh task with the correct total
+            current_stage = stage
+            task_id = progress.add_task("", total=total)
+        progress.update(
+            task_id,
+            completed=current,
+            description=f"[bold {COLORS['orange_3']}]{icon} {stage}: {current}/{total} {unit}[/]",
+        )
 
     with Progress(
         SpinnerColumn(style=COLORS["orange_2"]),
