@@ -63,7 +63,7 @@ _STREET_ADDRESS = re.compile(
         |Highway|Hwy|Parkway|Pkwy|Trail|Trl|Square|Sq|Loop|Way
     )
     (?:\.|\b)
-    (?:\s+(?:Apt|Suite|Ste|Unit|#)\s*\w+)?   # optional unit/apt
+    (?:\s+(?:Apt|Suite|Ste|Unit|\#)\s*\w+)?  # optional unit/apt
     """,
     re.VERBOSE | re.IGNORECASE,
 )
