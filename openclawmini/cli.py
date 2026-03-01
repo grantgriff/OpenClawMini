@@ -694,7 +694,13 @@ def _offer_data_generation(config: Config, memory) -> None:
             console=console,
         )
         if not want_regen:
-            console.print(f"[dim]Using existing training data. SFT → Task 7 | GRPO → Task 8[/]\n")
+            # Use existing data — still offer to run SFT if not yet trained
+            if existing_sft:
+                import types
+                stub = types.SimpleNamespace(sft_path=str(existing_sft[-1]))
+                _offer_sft_training(config, stub, memory)
+            else:
+                console.print(f"[dim]Using existing GRPO data. Generate SFT data first to run training.[/]\n")
             return
     else:
         want_data = Confirm.ask(
@@ -703,7 +709,7 @@ def _offer_data_generation(config: Config, memory) -> None:
             console=console,
         )
         if not want_data:
-            console.print(f"[dim]Skipping data generation. Run again to generate.[/]\n")
+            console.print(f"[dim]Skipping data generation. Run [bold cyan]openclawmini run[/] again to generate.[/]\n")
             return
 
     _run_data_cleansing(config, memory)
