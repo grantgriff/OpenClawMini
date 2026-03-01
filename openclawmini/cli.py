@@ -605,7 +605,10 @@ def _collect_document_files(store, memory, extractor) -> None:
         )
         if not raw.strip():
             break
-        p = Path(raw.strip()).expanduser()
+        # Strip shell escaping (e.g. drag-and-drop adds "\ " and "\(" on macOS)
+        import re as _re
+        cleaned = _re.sub(r"\\(.)", r"\1", raw.strip())
+        p = Path(cleaned).expanduser()
         if not p.exists():
             console.print(f"  [red]File not found: {p}[/]")
             continue
