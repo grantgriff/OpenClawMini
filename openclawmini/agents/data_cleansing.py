@@ -6,10 +6,20 @@ SFT data  → uses DataSimulator SDK (grantgriff/datasimulator):
   DataSimulator(source=profile.txt, data_type="sft") to generate
   high-quality Q&A pairs in Mistral fine-tuning JSONL format.
 
-GRPO data → custom GRPODataGenerator:
-  DataSimulator generates prompts only (no reference_response), so we
-  keep the custom approach that derives prompts FROM actual writing
-  samples, preserving the (prompt, reference) pairing RULER needs.
+GRPO data → custom GRPODataGenerator + DataSimulator prompt augmentation:
+  Primary: derives (prompt, reference_response) pairs from actual writing
+  samples, preserving exact pairing RULER needs.
+  Augmentation: DataSimulator generates diverse QUESTION prompts in SFT
+  mode; we discard the answers and pair the questions with random writing
+  samples as reference — expanding prompt variety without sacrificing style.
+
+Eval question augmentation → generate_question_prompts():
+  Returns just the question side of DataSimulator SFT output.
+  EvalsAgent can call this to augment the factual eval question set.
+
+Models (wired from Config or overridden directly):
+  datasimulator_generator_model: Gemini Pro  (high-quality generation)
+  datasimulator_verifier_model:  Gemini Flash (fast quality scoring)
 
 Output: timestamped JSONL files in data/training/
 """
@@ -80,6 +90,12 @@ class DataCleansingAgent:
 
     DEFAULT_OUTPUT_DIR = "./data/training"
 
+    # Default DataSimulator model assignments (match Config defaults):
+    #   generator → Gemini Pro  (data_generation model)
+    #   verifier  → Gemini Flash (eval_judge / research_extraction model)
+    DEFAULT_DS_GENERATOR = "gemini-2.5-pro"
+    DEFAULT_DS_VERIFIER  = "gemini-2.5-flash"
+
     def __init__(
         self,
         llm_client=None,
@@ -88,6 +104,8 @@ class DataCleansingAgent:
         quality_threshold: float = 6.0,
         output_dir: str = DEFAULT_OUTPUT_DIR,
         user_name: str = "the user",
+        datasimulator_generator_model: str = DEFAULT_DS_GENERATOR,
+        datasimulator_verifier_model: str = DEFAULT_DS_VERIFIER,
     ) -> None:
         self._llm = llm_client
         self.sft_target = sft_target
@@ -95,6 +113,8 @@ class DataCleansingAgent:
         self.quality_threshold = quality_threshold
         self.output_dir = Path(output_dir)
         self.user_name = user_name
+        self.datasimulator_generator_model = datasimulator_generator_model
+        self.datasimulator_verifier_model = datasimulator_verifier_model
 
     # ── SFT generation (DataSimulator primary) ─────────────────
 
@@ -159,8 +179,8 @@ class DataCleansingAgent:
             source=sources,
             data_type="sft",
             models={
-                "generator": "gemini-2.0-flash",
-                "verifier": "gemini-2.0-flash",
+                "generator": self.datasimulator_generator_model,
+                "verifier": self.datasimulator_verifier_model,
             },
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
@@ -264,7 +284,91 @@ class DataCleansingAgent:
             f"- Cover all fact categories: work, education, skills, location, interests, achievements"
         )
 
-    # ── GRPO generation (custom — needs actual writing as reference) ─
+    # ── DataSimulator prompt extraction ────────────────────────
+
+    def generate_question_prompts(
+        self,
+        memory,
+        count: int = 50,
+    ) -> list[str]:
+        """
+        Use DataSimulator SFT generation to extract ONLY the question side.
+
+        Runs DataSimulator with data_type="sft" targeting `count` samples,
+        then discards all assistant answers and returns just the user
+        questions as plain strings. These can be used as:
+          - GRPO writing prompts (paired with random writing samples as reference)
+          - Additional eval factual questions (via EvalSetGenerator augmentation)
+
+        Returns:
+            List of question strings (empty list if DataSimulator unavailable).
+        """
+        import tempfile
+        try:
+            from datasimulator import DataSimulator  # type: ignore[import]
+        except ImportError:
+            return []
+
+        if not memory.facts:
+            return []
+
+        profile_path = self._write_memory_profile(memory)
+        output_dir = self.output_dir / "prompts_cache"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"prompts_{_now_tag()}.jsonl"
+
+        try:
+            sdk = DataSimulator(
+                source=str(profile_path),
+                data_type="sft",
+                models={
+                    "generator": self.datasimulator_generator_model,
+                    "verifier": self.datasimulator_verifier_model,
+                },
+                google_api_key=os.getenv("GOOGLE_API_KEY"),
+                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
+                quality_threshold=self.quality_threshold,
+                max_cost=3.0,      # small budget — prompts only
+                batch_size=10,
+                parallel_batches=2,
+                interactive=False,
+                domain_context=(
+                    f"Generate diverse question prompts that someone might ask {self.user_name} "
+                    f"about their life, work, background, skills, and personality. "
+                    f"Questions should be natural and conversational. "
+                    f"Cover all fact categories in the source document."
+                ),
+            )
+            dataset = sdk.generate(num_samples=count, show_progress=False)
+            dataset.save(str(output_path))
+        except Exception:
+            return []
+
+        # Extract user questions only
+        questions: list[str] = []
+        try:
+            with open(output_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        messages = data.get("messages", [])
+                        user_msg = next(
+                            (m for m in messages if m.get("role") == "user"), None
+                        )
+                        if user_msg and user_msg.get("content"):
+                            questions.append(user_msg["content"])
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        except FileNotFoundError:
+            pass
+
+        return questions
+
+    # ── GRPO generation (custom + DataSimulator prompt augmentation) ─
 
     def generate_grpo_data(
         self,
@@ -274,10 +378,16 @@ class DataCleansingAgent:
         """
         Generate GRPO style scenarios from memory.writing_samples and memory.posts.
 
-        Uses custom generator (not DataSimulator) because GRPO requires
-        (prompt, reference_response) pairs where reference_response is ACTUAL
-        user writing — DataSimulator only generates prompts with no reference.
+        Primary generation: GRPODataGenerator derives (prompt, reference_response)
+        pairs from actual writing samples so RULER has a real reference to score against.
+
+        Augmentation: DataSimulator generates diverse question prompts in SFT mode;
+        we discard the answers and pair the questions with random writing samples as
+        reference_response — expanding prompt variety beyond what writing samples alone
+        can reverse-engineer.
         """
+        import random
+
         generator = GRPODataGenerator(
             llm_client=self._llm,
             user_name=self.user_name,
@@ -288,6 +398,29 @@ class DataCleansingAgent:
             target_count=self.grpo_target,
             progress_callback=progress_callback,
         )
+
+        # Augment with DataSimulator-generated prompts (questions only)
+        usable_samples = [
+            s for s in memory.writing_samples if len(s.text) >= 50
+        ]
+        if usable_samples:
+            # Request ~20% of target as additional diverse prompts
+            extra_count = max(10, self.grpo_target // 5)
+            try:
+                extra_prompts = self.generate_question_prompts(memory, count=extra_count)
+                for prompt_text in extra_prompts:
+                    ref_sample = random.choice(usable_samples)
+                    scenarios.append(GRPOScenario(
+                        prompt=prompt_text,
+                        reference_response=ref_sample.text,
+                        style_markers=["matches writing style", "first person", "natural tone"],
+                        scenario_type="style_prompt",
+                        source_sample_id=ref_sample.id,
+                        quality_score=7.0,
+                    ))
+            except Exception:
+                pass  # augmentation is best-effort
+
         tag = _now_tag()
         jsonl_path = self.output_dir / f"grpo_{tag}.jsonl"
         meta_path = self.output_dir / f"grpo_{tag}_meta.json"
@@ -354,12 +487,27 @@ class DataCleansingAgent:
             quality_threshold = getattr(config.training, "quality_threshold", 7.0) * 0.7
             user_name = getattr(config.user, "name", "") or user_name
 
+        # Pull DataSimulator model overrides from config if available
+        ds_generator = cls.DEFAULT_DS_GENERATOR
+        ds_verifier  = cls.DEFAULT_DS_VERIFIER
+        if config is not None:
+            # data_generation model → generator (Pro for quality)
+            gen_model = getattr(config.data_generation, "model", None)
+            if gen_model:
+                ds_generator = gen_model
+            # eval_judge model → verifier (Flash for speed/cost)
+            ver_model = getattr(config.eval_judge, "model", None)
+            if ver_model:
+                ds_verifier = ver_model
+
         return cls(
             llm_client=llm_client,
             sft_target=sft_target,
             grpo_target=grpo_target,
             quality_threshold=quality_threshold,
             user_name=user_name,
+            datasimulator_generator_model=ds_generator,
+            datasimulator_verifier_model=ds_verifier,
         )
 
 
