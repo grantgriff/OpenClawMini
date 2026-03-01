@@ -91,11 +91,14 @@ def search_duckduckgo(query: str, max_results: int = 10) -> WebSearchResult:
     """
     Search DuckDuckGo (no API key needed, fallback search backend).
 
-    Uses the duckduckgo-search library with retry on rate-limit errors.
+    Uses the ddgs library (formerly duckduckgo-search) with retry on rate-limit errors.
     """
     result = WebSearchResult()
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS  # legacy name
         for attempt in range(3):
             try:
                 with DDGS() as ddgs:
@@ -114,7 +117,7 @@ def search_duckduckgo(query: str, max_results: int = 10) -> WebSearchResult:
                 else:
                     time.sleep(2 ** attempt)  # Exponential backoff
     except ImportError:
-        result.error = "duckduckgo-search not installed"
+        result.error = "ddgs (or duckduckgo-search) not installed"
     return result
 
 
@@ -178,7 +181,7 @@ def scrape_pages_parallel(
 ) -> dict[str, str]:
     """
     Scrape multiple URLs in parallel. Returns {url: page_text}.
-    Any failed URL maps to empty string.
+    Any failed or timed-out URL maps to empty string.
     """
     results: dict[str, str] = {url: "" for url in urls}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -187,12 +190,18 @@ def scrape_pages_parallel(
             for url in urls
             if url and url.startswith("http")
         }
-        for future in as_completed(future_to_url, timeout=timeout + 5):
-            url = future_to_url[future]
-            try:
-                results[url] = future.result(timeout=2)
-            except Exception:
-                pass
+        try:
+            for future in as_completed(future_to_url, timeout=timeout + 5):
+                url = future_to_url[future]
+                try:
+                    results[url] = future.result(timeout=2)
+                except Exception:
+                    pass
+        except TimeoutError:
+            # Some pages took too long — return whatever we collected so far
+            for future, url in future_to_url.items():
+                if not future.done():
+                    future.cancel()
     return results
 
 
