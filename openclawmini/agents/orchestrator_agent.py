@@ -98,7 +98,6 @@ You control a fine-tuning pipeline with these tools:
 - run_eval: Evaluate current model accuracy (factual + stylistic + per-category)
 - run_sft: Run supervised fine-tuning (W&B compute FREE; cost ~$1.50 for data gen)
 - run_grpo: Run GRPO RL training (W&B compute FREE; cost ~$0.50 for RULER scoring)
-- targeted_research: Targeted web research on a weak category (~$0.25)
 - generate_sft_data: Generate new SFT training data (~$1.00 for DataSimulator)
 - check_status: Check budget, training history, current model
 - stop: Stop when done
@@ -110,11 +109,10 @@ you can run 6+ complete loops.
 
 Decision guidelines:
 1. Always start with run_eval("base") if no eval history exists
-2. If factual accuracy < {sft_threshold:.0%}: generate_sft_data → run_sft (skip targeted_research if research_history shows Phase 1 already ran)
+2. If factual accuracy < {sft_threshold:.0%}: generate_sft_data → run_sft
 3. If factual accuracy >= threshold but overall < target: run_grpo for stylistic improvement
-4. Only use targeted_research if research_history shows NO prior research for a weak category, or if a category's accuracy is still poor after SFT
-5. Stop when target reached OR after 3 consecutive rounds with no improvement
-6. Be decisive — one action per round, no overthinking
+4. Stop when target reached OR after 3 consecutive rounds with no improvement
+5. Be decisive — one action per round, no overthinking
 """
 
     def __init__(
@@ -683,32 +681,6 @@ Decision guidelines:
                     "Improves stylistic alignment using RULER scoring. Estimated cost: ~$7-12."
                 ),
                 "input_schema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "targeted_research",
-                "description": (
-                    "Conduct targeted web research to gather more facts about a specific "
-                    "fact category where the model is underperforming. "
-                    "Estimated cost: ~$0.50."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "description": "The fact category to research",
-                            "enum": [
-                                "work", "education", "skills", "location",
-                                "personal", "interests", "achievements", "other",
-                            ],
-                        },
-                        "additional_context": {
-                            "type": "string",
-                            "description": "Optional extra guidance for the research",
-                        },
-                    },
-                    "required": ["category"],
-                },
             },
             {
                 "name": "generate_sft_data",
