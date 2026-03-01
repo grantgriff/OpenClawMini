@@ -19,8 +19,13 @@ dependencies = [
     "google-auth-oauthlib>=1.0",
     "google-api-python-client>=2.100",
     "google-auth-httplib2>=0.2",
-    # HTML email body stripping
+    # Gemini LLM for fact extraction
+    "google-generativeai>=0.8",
+    # HTML email body stripping + web scraping
     "beautifulsoup4>=4.12",
+    "requests>=2.31",
+    # Web search (no API key required)
+    "duckduckgo-search>=6.0",
 ]
 
 [project.scripts]

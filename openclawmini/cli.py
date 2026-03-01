@@ -205,10 +205,34 @@ def cmd_init() -> None:
     else:
         console.print(f"\n[dim]Skipping Gmail setup.[/]")
 
-    # ── Step 4: LinkedIn OAuth ─────────────────────────────────
+    # ── Step 4: LinkedIn ───────────────────────────────────────
     if use_linkedin:
-        print_step(4, "Connect LinkedIn (Optional)")
-        env_vars = _setup_linkedin_oauth(env_vars)
+        print_step(4, "Connect LinkedIn")
+        console.print(
+            f"\n[{COLORS['orange_3']}]LinkedIn public profile scraping (no API key needed).[/]"
+        )
+        console.print(
+            f"[dim]We'll scrape your public LinkedIn profile for professional facts.[/]\n"
+        )
+        linkedin_url = Prompt.ask(
+            f"  [bold]LinkedIn profile URL[/] [dim](e.g. https://linkedin.com/in/yourname)[/]",
+            default="",
+            console=console,
+        )
+        if linkedin_url.strip():
+            env_vars["LINKEDIN_PROFILE_URL"] = linkedin_url.strip()
+            console.print(f"  [dim]LinkedIn URL saved.[/]")
+        else:
+            console.print(f"  [dim]Skipping — you can add LINKEDIN_PROFILE_URL to .env later.[/]")
+
+        # Also offer full API OAuth setup
+        want_oauth = Confirm.ask(
+            "  Set up LinkedIn API OAuth (for posts/deeper data)?",
+            default=False,
+            console=console,
+        )
+        if want_oauth:
+            env_vars = _setup_linkedin_oauth(env_vars)
     else:
         console.print(f"\n[dim]Skipping LinkedIn setup.[/]")
 
@@ -381,10 +405,8 @@ def _handle_run_choice(choice: int, config: Config) -> None:
         _run_research(config, store, memory, merge=True)
         _start_pipeline(config, store, memory)
     elif choice == 3:
-        console.print(f"\n[{COLORS['orange_3']}]File upload — (Task 4 feature, coming soon)[/]")
-        console.print(f"[dim]For now, run with option 2 to re-research all sources.[/]")
         memory = store.load()
-        _start_pipeline(config, store, memory)
+        _run_file_upload(config, store, memory)
     elif choice == 4:
         if Confirm.ask("  [red]Delete all memory and restart?[/]", default=False, console=console):
             memory_path.unlink(missing_ok=True)
@@ -397,6 +419,77 @@ def _handle_run_choice(choice: int, config: Config) -> None:
     else:
         console.print("[red]Invalid choice.[/]")
         raise typer.Exit(1)
+
+
+def _run_file_upload(config: Config, store: "MemoryStore", memory: "Memory") -> None:
+    """Prompt user for file paths and process uploaded conversation logs."""
+    from openclawmini.agents.research import ResearchAgent
+
+    console.print(f"\n[bold {COLORS['orange_2']}]📂 File Upload[/]")
+    console.print(
+        f"[{COLORS['orange_4']}]Supported formats:[/] "
+        f"ChatGPT export (conversations.json), "
+        f"Claude export (claude_conversations.json), "
+        f"generic role/content JSON lists.\n"
+    )
+    console.print(f"[dim]You can also upload any plain-text file (e.g. a resume, bio, or notes).[/]\n")
+
+    file_paths: list[str] = []
+    while True:
+        path = Prompt.ask(
+            f"  [bold]File path[/] [dim](leave blank to finish)[/]",
+            default="",
+            console=console,
+        )
+        if not path.strip():
+            break
+        p = Path(path.strip()).expanduser()
+        if not p.exists():
+            console.print(f"  [red]File not found: {p}[/]")
+            continue
+        file_paths.append(str(p))
+        console.print(f"  [dim]Added: {p.name}[/]")
+
+    if not file_paths:
+        console.print(f"[{COLORS['orange_4']}]No files provided. Returning to pipeline.[/]")
+        _start_pipeline(config, store, memory)
+        return
+
+    extractor = _build_gemini_extractor()
+    if extractor:
+        console.print(f"\n[dim]Gemini extractor active — extracting facts from conversations.[/]")
+    else:
+        console.print(f"\n[dim]No GOOGLE_API_KEY — using rule-based fact extraction.[/]")
+
+    agent = ResearchAgent(store=store, memory=memory, llm_client=extractor)
+
+    console.print(f"\n[{COLORS['orange_3']}]Processing {len(file_paths)} file(s)...[/]")
+    result = agent.process_uploaded_files(file_paths)
+
+    store.save(memory)
+
+    if result.total_added > 0:
+        console.print(f"\n[bold {COLORS['orange_5']}]✓ Files processed![/]")
+        console.print(result.summary())
+    else:
+        console.print(f"\n[{COLORS['orange_4']}]No new items extracted from uploaded files.[/]")
+    if result.errors:
+        for err in result.errors:
+            console.print(f"  [dim red]• {err}[/]")
+
+    _start_pipeline(config, store, memory)
+
+
+def _build_gemini_extractor():
+    """Build a GeminiExtractor from env if GOOGLE_API_KEY is available."""
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        from openclawmini.integrations.gemini_extractor import GeminiExtractor
+        return GeminiExtractor(api_key=api_key)
+    except ImportError:
+        return None
 
 
 def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge: bool = False) -> None:
@@ -415,7 +508,14 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
     console.print(f"\n[bold {COLORS['orange_2']}]🔍 Research Phase[/]")
     console.print(f"[dim]Sources: {', '.join(active_sources)}[/]\n")
 
-    agent = ResearchAgent(store=store, memory=memory)
+    # Wire up Gemini for multi-fact extraction (requires GOOGLE_API_KEY)
+    extractor = _build_gemini_extractor()
+    if extractor:
+        console.print(f"[dim]Gemini extractor active — will extract multiple facts per email.[/]\n")
+    else:
+        console.print(f"[dim]No GOOGLE_API_KEY found — using rule-based classification.[/]\n")
+
+    agent = ResearchAgent(store=store, memory=memory, llm_client=extractor)
 
     # Live progress tracking via Rich
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn

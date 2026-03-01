@@ -68,7 +68,7 @@ class GmailClient:
     # Minimum body length to include (filter out 1-liners like "thanks!")
     MIN_BODY_WORDS = 10
     # Max results to fetch per call (Gmail API page size max is 500)
-    DEFAULT_MAX_RESULTS = 200
+    DEFAULT_MAX_RESULTS = 500
 
     def __init__(
         self,
