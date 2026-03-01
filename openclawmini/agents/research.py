@@ -281,14 +281,19 @@ class ResearchAgent:
     def _process_email(self, email, result: ResearchResult) -> None:
         """
         Process a single parsed email:
+          0. Redact PII from body before any storage or extraction.
           1. Always store it as a writing sample (captures style).
           2. Use Gemini to extract multiple facts (if available), else rule-based.
           3. Always do rule-based relationship + preference extraction.
         """
+        # ── 0. PII scrubbing (always, before anything else) ───
+        from openclawmini.utils.pii_scrubber import redact_pii
+        safe_body = redact_pii(email.body)
+
         # ── 1. Writing sample (always) ─────────────────────────
         writing_cat = _email_writing_category(email)
         sample = WritingSample(
-            text=email.body,
+            text=safe_body,
             category=writing_cat,
             context=f"Email: {email.subject[:80]}",
             source=DataSource.GMAIL,
@@ -302,7 +307,7 @@ class ResearchAgent:
         if self._extractor and hasattr(self._extractor, "extract_facts_from_email"):
             # Gemini multi-fact extraction
             facts = self._extractor.extract_facts_from_email(
-                email_body=email.body,
+                email_body=safe_body,
                 email_subject=email.subject,
                 user_name=self.memory.user.name,
             )
@@ -313,10 +318,10 @@ class ResearchAgent:
                     result.facts_added += 1
         else:
             # Rule-based fallback: only store if classified as FACTUAL
-            classification = self.classifier.classify(email.body, source=DataSource.GMAIL)
+            classification = self.classifier.classify(safe_body, source=DataSource.GMAIL)
             if classification.category == MemoryCategory.FACTUAL:
                 fact = Fact(
-                    content=email.body[:500],
+                    content=safe_body[:500],
                     category=classification.sub_category or FactCategory.OTHER,
                     confidence=classification.confidence,
                     source=DataSource.GMAIL,
@@ -341,10 +346,10 @@ class ResearchAgent:
                 result.relationships_added += 1
 
         # ── 4. Preference extraction (rule-based, always) ──────
-        pref_cls = self.classifier._classify_rule_based(email.body, source=DataSource.GMAIL)
+        pref_cls = self.classifier._classify_rule_based(safe_body, source=DataSource.GMAIL)
         if pref_cls.category == MemoryCategory.PREFERENCE:
             pref = Preference(
-                content=email.body[:300],
+                content=safe_body[:300],
                 category=pref_cls.sub_category or "other",
                 evidence=f"Extracted from email: {email.subject[:60]}",
                 confidence=pref_cls.confidence,
