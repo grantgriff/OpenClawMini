@@ -889,7 +889,7 @@ def _run_sft_training(config: Config, sft_path: Path, memory) -> None:
         console.print(f"[dim]Check WANDB_API_KEY and openpipe-art installation.[/]")
 
 
-def _run_stage_eval(config: Config, stage: str, model_name: str) -> None:
+def _run_stage_eval(config: Config, stage: str, model_name: str):
     """Run factual + stylistic eval against an ART-trained model."""
     from openclawmini.agents.evals import EvalsAgent
     from openclawmini.eval.router import decide_next_action
@@ -948,8 +948,68 @@ def _run_stage_eval(config: Config, stage: str, model_name: str) -> None:
         except Exception:
             pass
 
+        return results
+
     except Exception as e:
         console.print(f"[red]Eval failed: {e}[/]")
+        return None
+
+
+def _offer_hf_upload(config: Config, project: str, model_name: str, user_name: str, stage: str, eval_result=None) -> None:
+    """Ask the user if they want to upload the trained model to HuggingFace Hub."""
+    from rich.prompt import Confirm
+    from openclawmini.training.hf_exporter import ModelExporter
+
+    exporter = ModelExporter.from_env() if hasattr(ModelExporter, "from_env") else ModelExporter()
+    if not exporter.hf_token:
+        console.print(f"[dim]HF_TOKEN not set — skipping HuggingFace upload offer.[/]\n")
+        return
+
+    metrics_str = ""
+    if eval_result is not None:
+        metrics_str = (
+            f"\n  Factual: {eval_result.factual_accuracy:.0%}  "
+            f"Stylistic: {eval_result.stylistic_accuracy:.0%}  "
+            f"Overall: {eval_result.overall_accuracy:.0%}"
+        )
+
+    console.print(
+        f"\n[bold {COLORS['orange_2']}]🤗 Upload to HuggingFace?[/]{metrics_str}"
+    )
+    want_upload = Confirm.ask(
+        f"  Upload {stage.upper()} model to HuggingFace Hub?",
+        default=True,
+        console=console,
+    )
+    if not want_upload:
+        console.print(f"[dim]Skipping HF upload.[/]\n")
+        return
+
+    _do_hf_upload(exporter, project, model_name, user_name, stage)
+
+
+def _do_hf_upload(exporter, project: str, model_name: str, user_name: str, stage: str) -> None:
+    """Run the HF upload and print the resulting repo URL."""
+    console.print(f"[dim]Uploading {stage.upper()} adapter to HuggingFace...[/]")
+    try:
+        with console.status(f"[bold {COLORS['orange_3']}]Uploading to HuggingFace Hub...[/]"):
+            repo_id = exporter.export(
+                project=project,
+                model_name=model_name,
+                user_name=user_name,
+                stage=stage,
+            )
+        if repo_id:
+            print_panel(
+                f"[bold {COLORS['orange_5']}]✓ Uploaded to HuggingFace[/]\n\n"
+                f"  Repo:  [cyan]https://huggingface.co/{repo_id}[/]\n"
+                f"  Stage: [cyan]{stage.upper()}[/]",
+                title="🤗 HuggingFace",
+            )
+        else:
+            console.print(f"[yellow]HF upload returned no repo ID — check HF_TOKEN and W&B artifact availability.[/]")
+    except Exception as e:
+        console.print(f"[red]HF upload failed: {e}[/]")
 
 
 def _offer_grpo_training(config: Config, sft_result, memory, user_name: str) -> None:
@@ -1001,7 +1061,17 @@ def _run_grpo_training(config: Config, sft_result, memory, user_name: str) -> No
 
         # Post-GRPO eval
         console.print(f"\n[bold {COLORS['orange_2']}]📊 Post-GRPO Eval[/]")
-        _run_stage_eval(config, stage="grpo", model_name=grpo_result.model_name)
+        eval_result = _run_stage_eval(config, stage="grpo", model_name=grpo_result.model_name)
+
+        # Offer HuggingFace upload
+        _offer_hf_upload(
+            config=config,
+            project=grpo_result.project,
+            model_name=grpo_result.model_name,
+            user_name=user_name,
+            stage="grpo",
+            eval_result=eval_result,
+        )
 
     except Exception as e:
         console.print(f"[red]GRPO training failed: {e}[/]")
@@ -1219,6 +1289,22 @@ def cmd_train(
                 logger.log_eval(entry)
     except Exception:
         pass
+
+    # Auto-upload to HuggingFace when the model is approved (target reached)
+    if result.target_reached and result.final_model_name:
+        from openclawmini.training.hf_exporter import ModelExporter
+        exporter = ModelExporter.from_env()
+        if exporter.hf_token:
+            console.print(f"\n[bold {COLORS['orange_2']}]🤗 Target reached — uploading model to HuggingFace...[/]")
+            _do_hf_upload(
+                exporter=exporter,
+                project=result.final_project or "openclawmini",
+                model_name=result.final_model_name,
+                user_name=config.user.name,
+                stage=result.best_stage or "grpo",
+            )
+        else:
+            console.print(f"[dim]Set HF_TOKEN to auto-upload trained models to HuggingFace.[/]")
 
 
 def _ensure_eval_set(config: Config, memory) -> None:

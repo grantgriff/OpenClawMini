@@ -48,6 +48,8 @@ class OrchestratorResult:
     target_reached: bool
     stop_reason: str
     eval_history: list = field(default_factory=list)
+    final_model_name: str = ""
+    final_project: str = ""
 
     def summary_lines(self) -> list[str]:
         return [
@@ -743,6 +745,8 @@ Decision guidelines:
             target_reached=latest.get("overall_accuracy", 0.0) >= target,
             stop_reason=self._stop_reason or "Completed",
             eval_history=history,
+            final_model_name=self._current_model_name,
+            final_project="openclawmini",
         )
 
         self._console.print(Panel(
