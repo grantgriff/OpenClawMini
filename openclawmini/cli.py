@@ -316,10 +316,27 @@ def cmd_run() -> None:
     config = load_config("config.yaml")
 
     if memory_path.exists():
-        # Continuing session
+        # Continuing session — load and display memory stats
+        from openclawmini.memory import MemoryStore
+        store = MemoryStore(str(memory_path))
+        memory = store.load()
+        stats = memory.stats()
+        last_updated = memory.user.last_updated.strftime("%Y-%m-%d %H:%M") if memory.user.last_updated else "unknown"
+
+        stats_lines = (
+            f"  Facts:           [cyan]{stats['facts']}[/]\n"
+            f"  Writing samples: [cyan]{stats['writing_samples']}[/]\n"
+            f"  Posts:           [cyan]{stats['posts']}[/]\n"
+            f"  Relationships:   [cyan]{stats['relationships']}[/]\n"
+            f"  Preferences:     [cyan]{stats['preferences']}[/]\n"
+            f"  Total items:     [bold cyan]{stats['total_items']}[/]\n"
+            f"  Last updated:    [dim]{last_updated}[/]"
+        )
+
         print_panel(
             f"[bold {COLORS['orange_5']}]OpenClawMini — Continuing Training[/]\n\n"
-            f"Found existing memory for: [bold cyan]{config.user.name or 'Unknown'}[/]",
+            f"Found existing memory for: [bold cyan]{config.user.name or memory.user.name or 'Unknown'}[/]\n\n"
+            + stats_lines,
             title="🟠 OpenClawMini",
         )
 
@@ -367,15 +384,15 @@ def _handle_run_choice(choice: int, config: Config) -> None:
 
 
 def _start_pipeline(config: Config) -> None:
-    """Stub pipeline entry point — real orchestration comes in Task 8."""
+    """Stub pipeline entry point — real orchestration wired in Tasks 3-8."""
     console.print()
     print_panel(
         f"[bold {COLORS['orange_5']}]Pipeline starting...[/]\n\n"
-        f"[dim]Full multi-agent pipeline will be implemented in Tasks 2-8.[/]\n\n"
         f"  Orchestrator: [cyan]{config.orchestrator.model}[/]\n"
         f"  Base model:   [cyan]{config.base_model.model}[/]\n"
         f"  SFT samples:  [cyan]{config.training.sft_sample_count}[/]\n"
-        f"  GRPO targets: [cyan]{config.training.grpo_scenario_count}[/]",
+        f"  GRPO targets: [cyan]{config.training.grpo_scenario_count}[/]\n\n"
+        f"[dim]Research → Data → SFT → GRPO pipeline coming in Tasks 3-8.[/]",
         title="🟠 Pipeline",
     )
 
