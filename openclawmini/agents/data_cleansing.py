@@ -200,15 +200,16 @@ class DataCleansingAgent:
 
         # Parse JSONL; inject our persona system message (replaces DataSimulator's generic one)
         persona_system = (
-            f"You are {self.user_name}. Answer all questions about yourself honestly "
-            f"and naturally in first person. Draw only from what you know about yourself."
+            "You are an AI assistant with detailed knowledge of a specific person's background. "
+            "Answer all questions about this person honestly and naturally in first person. "
+            "Draw only from what you know about them."
         )
         samples = _parse_sft_jsonl(output_path, persona_system=persona_system)
         return samples, output_path
 
     def _write_memory_profile(self, memory) -> Path:
         """Write all facts + preferences as a structured plain-text profile file."""
-        lines = [f"# Personal Profile: {self.user_name}", ""]
+        lines = ["# Personal Profile", ""]
 
         # Group facts by category
         by_cat: dict[str, list[str]] = {}
@@ -241,9 +242,9 @@ class DataCleansingAgent:
     def _write_writing_samples(self, memory) -> Path:
         """Write writing samples and posts as a plain-text file for DataSimulator."""
         lines = [
-            f"# Writing Samples: {self.user_name}",
+            "# Writing Samples",
             "",
-            f"The following are actual messages and posts written by {self.user_name}.",
+            "The following are actual messages and posts written by the person.",
             "Use these to understand their natural voice, tone, and communication style.",
             "",
         ]
@@ -267,12 +268,12 @@ class DataCleansingAgent:
     def _sft_domain_context(self, memory) -> str:
         fact_count = len(memory.facts)
         return (
-            f"Generate diverse question-answer training pairs where an AI assistant IS {self.user_name}, "
-            f"responding in first person.\n\n"
-            f"The source document contains {fact_count} verified facts about {self.user_name}'s "
+            f"Generate diverse question-answer training pairs where an AI assistant answers "
+            f"questions about a person's background, responding in first person.\n\n"
+            f"The source document contains {fact_count} verified facts about the person's "
             f"background, work, education, skills, interests, and personal life.\n\n"
             f"Requirements:\n"
-            f"- Answer AS {self.user_name} in first person (use 'I', 'my', 'me')\n"
+            f"- Answer in first person (use 'I', 'my', 'me')\n"
             f"- Draw ONLY from facts in the source document — no fabrication\n"
             f"- Vary question types: direct ('Where do you work?'), conversational "
             f"('Tell me about yourself'), situational, reflective ('What are you proud of?')\n"
@@ -331,10 +332,10 @@ class DataCleansingAgent:
                 parallel_batches=2,
                 interactive=False,
                 domain_context=(
-                    f"Generate diverse question prompts that someone might ask {self.user_name} "
-                    f"about their life, work, background, skills, and personality. "
-                    f"Questions should be natural and conversational. "
-                    f"Cover all fact categories in the source document."
+                    "Generate diverse question prompts that someone might ask a person "
+                    "about their life, work, background, skills, and personality. "
+                    "Questions should be natural and conversational. "
+                    "Cover all fact categories in the source document."
                 ),
             )
             dataset = sdk.generate(num_samples=count, show_progress=False)
