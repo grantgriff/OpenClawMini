@@ -12,6 +12,7 @@ env/
 .env
 *.pem
 *.key
+config.yaml
 
 # Data (generated, not tracked)
 data/memory.json
