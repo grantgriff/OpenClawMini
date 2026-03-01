@@ -79,7 +79,7 @@ class WBLogger:
                 },
                 reinit=True,
             )
-            self._wandb.log({
+            metrics = {
                 "factual_accuracy": results.factual_accuracy,
                 "stylistic_accuracy": results.stylistic_accuracy,
                 "overall_accuracy": results.overall_accuracy,
@@ -89,7 +89,11 @@ class WBLogger:
                 "weak_dimension": results.weak_dimension,
                 "recommended_action": results.recommended_action,
                 "stage": results.stage,
-            })
+            }
+            # Per-category accuracy (prefixed for W&B grouping)
+            for cat, acc in getattr(results, "category_accuracy", {}).items():
+                metrics[f"factual_by_category/{cat}"] = acc
+            self._wandb.log(metrics)
 
             # Per-question factual breakdown (as a W&B Table)
             if results.factual_details:

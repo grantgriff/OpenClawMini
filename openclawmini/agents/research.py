@@ -135,6 +135,69 @@ class ResearchAgent:
             self._research_file(path, result)
         return result
 
+    def targeted_research(
+        self,
+        user_name: str,
+        category: str,
+        memory,
+        max_results: int = 5,
+    ) -> ResearchResult:
+        """
+        Run targeted web research to gather more facts about a specific category
+        the model is weak on (e.g. "work", "education", "skills").
+
+        Uses DuckDuckGo with category-specific queries, then extracts facts
+        with Gemini using a category-focused prompt.
+
+        Args:
+            user_name: The user's name for search queries.
+            category: Fact category to target (work, education, skills, etc.)
+            memory: Memory object to add new facts to.
+            max_results: Max web search results per query.
+
+        Returns:
+            ResearchResult with counts of items added.
+        """
+        from openclawmini.integrations.web_search import search_duckduckgo, scrape_page
+
+        result = ResearchResult()
+        extractor = self._get_extractor(result, f"Targeted research ({category})")
+        if extractor is None:
+            return result
+
+        queries = _build_targeted_queries(user_name, category)
+        seen_urls: set[str] = set()
+
+        for query in queries[:3]:
+            search_result = search_duckduckgo(query, max_results=max_results)
+            if search_result.error:
+                result.errors.append(f"Search error: {search_result.error}")
+                break
+
+            for r in search_result.results:
+                if not r.url or r.url in seen_urls:
+                    continue
+                seen_urls.add(r.url)
+
+                page_text = scrape_page(r.url) or r.snippet
+                if not page_text:
+                    continue
+
+                facts = _extract_targeted_facts(
+                    extractor=extractor,
+                    page_text=page_text,
+                    url=r.url,
+                    user_name=user_name,
+                    category=category,
+                )
+                for fact in facts:
+                    before = len(memory.facts)
+                    self.store.add_fact(memory, fact)
+                    if len(memory.facts) > before:
+                        result.facts_added += 1
+
+        return result
+
     # ── Gmail ──────────────────────────────────────────────────
 
     def _research_gmail(
@@ -519,3 +582,116 @@ def _detect_available_sources() -> dict:
         ),
         "file_upload": False,  # Triggered directly from CLI
     }
+
+
+# ── Targeted research helpers ──────────────────────────────────
+
+_CATEGORY_QUERIES = {
+    "work": [
+        "{name} job title company",
+        "{name} career employment",
+        "{name} professional role",
+    ],
+    "education": [
+        "{name} university degree education",
+        "{name} college graduation",
+        "{name} studied academic background",
+    ],
+    "skills": [
+        "{name} skills expertise technology",
+        "{name} proficient tools programming",
+        "{name} professional skills",
+    ],
+    "location": [
+        "{name} location city lives",
+        "{name} based where",
+        "{name} hometown current location",
+    ],
+    "personal": [
+        "{name} personal background story",
+        "{name} about bio",
+        "{name} interests hobbies",
+    ],
+    "interests": [
+        "{name} interests hobbies activities",
+        "{name} passion projects",
+        "{name} extracurricular",
+    ],
+    "achievements": [
+        "{name} achievements awards recognition",
+        "{name} accomplishments built created",
+        "{name} notable projects",
+    ],
+    "other": [
+        "{name} profile background",
+        "{name} about",
+    ],
+}
+
+
+def _build_targeted_queries(user_name: str, category: str) -> list[str]:
+    """Build search queries for a specific fact category."""
+    templates = _CATEGORY_QUERIES.get(category.lower(), _CATEGORY_QUERIES["other"])
+    return [t.format(name=user_name) for t in templates]
+
+
+def _extract_targeted_facts(
+    extractor,
+    page_text: str,
+    url: str,
+    user_name: str,
+    category: str,
+) -> list:
+    """Extract facts focused on a specific category."""
+    from openclawmini.memory.schema import DataSource, Fact, FactCategory
+
+    _CATEGORY_MAP = {
+        "work": FactCategory.WORK,
+        "education": FactCategory.EDUCATION,
+        "skills": FactCategory.SKILLS,
+        "location": FactCategory.LOCATION,
+        "personal": FactCategory.PERSONAL,
+        "interests": FactCategory.INTERESTS,
+        "achievements": FactCategory.ACHIEVEMENTS,
+        "other": FactCategory.OTHER,
+    }
+    target_cat = _CATEGORY_MAP.get(category.lower(), FactCategory.OTHER)
+    source = DataSource.LINKEDIN if "linkedin" in url.lower() else DataSource.WEB_SEARCH
+
+    prompt = f"""Extract facts about {user_name} from this page, focusing specifically on their {category}.
+Source: {url}
+Content: {page_text[:2500]}
+
+Focus exclusively on {category}-related facts: {', '.join(_CATEGORY_QUERIES.get(category, ['background'])[:1])}.
+Be generous — include any fact you can reasonably infer.
+
+Return JSON array:
+[{{"content": "fact text", "category": "{category}", "confidence": 0.0-1.0}}]
+JSON only:"""
+
+    try:
+        import json
+        import re
+        raw = extractor.complete(prompt)
+        raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not match:
+            return []
+        data = json.loads(match.group())
+        facts = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content", "")).strip()
+            if not content or len(content) < 10:
+                continue
+            confidence = float(item.get("confidence", 0.7))
+            facts.append(Fact(
+                content=content,
+                category=target_cat,
+                confidence=max(0.0, min(1.0, confidence)),
+                source=source,
+            ))
+        return facts
+    except Exception:
+        return []

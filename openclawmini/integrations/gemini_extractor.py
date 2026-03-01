@@ -110,11 +110,11 @@ class GeminiExtractor:
 Email Body:
 {email_body[:2000]}
 
-Extract ALL factual information you can directly infer about the email's AUTHOR (not recipients).
+Extract ALL factual information about the email's AUTHOR (not recipients) — be generous and inclusive.
 Focus on: job/role, company, location, education, skills, interests, achievements, personal background.
-Only include facts you can directly infer — do NOT invent or assume.
+Include any fact you can reasonably infer from context, even if only partially stated. More data is better.
 
-Return a JSON array (empty [] if nothing found) of fact objects:
+Return a JSON array (empty [] if truly nothing found) of fact objects:
 [
   {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
@@ -150,11 +150,11 @@ JSON only, no markdown fences:"""
 Page content:
 {page_text[:3000]}
 
-Extract ALL factual information about {user_name or "this person"}.
+Extract ALL factual information about {user_name or "this person"} — be generous and inclusive.
 Focus on: job/role, company, location, education, skills, interests, achievements, background.
-Skip generic page content — only extract facts about the specific person.
+Include partial or implied facts. Skip only clearly irrelevant generic content.
 
-Return a JSON array (empty [] if nothing useful found):
+Return a JSON array (empty [] if truly nothing found):
 [
   {{"content": "Specific fact", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...
@@ -187,10 +187,11 @@ JSON only, no markdown fences:"""
 {name_hint}Messages:
 {combined[:3000]}
 
-Extract ALL factual information you can directly infer about the MESSAGE AUTHOR.
+Extract ALL factual information about the MESSAGE AUTHOR — be generous and inclusive.
 Focus on: job/role, company, location, education, skills, interests, achievements, personal background.
+Include any fact that can be reasonably inferred from context. More data is better.
 
-Return a JSON array (empty [] if nothing found):
+Return a JSON array (empty [] if truly nothing found):
 [
   {{"content": "Specific fact about the person", "category": "work|education|skills|location|personal|interests|achievements|other", "confidence": 0.0-1.0}},
   ...

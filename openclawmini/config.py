@@ -58,6 +58,7 @@ class TrainingConfig:
     sft_learning_rate: float = 2e-5
     grpo_steps: int = 100
     grpo_trajectories_per_scenario: int = 4
+    orchestrator_budget: float = 25.0   # Max USD for autonomous orchestration
 
 
 @dataclass
@@ -123,6 +124,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         sft_learning_rate=training_raw.get("sft_learning_rate", 2e-5),
         grpo_steps=training_raw.get("grpo_steps", 100),
         grpo_trajectories_per_scenario=training_raw.get("grpo_trajectories_per_scenario", 4),
+        orchestrator_budget=training_raw.get("orchestrator_budget", 25.0),
     )
 
     user = UserConfig(
@@ -175,6 +177,7 @@ def save_config(config: Config, config_path: str = "config.yaml") -> None:
             "sft_learning_rate": config.training.sft_learning_rate,
             "grpo_steps": config.training.grpo_steps,
             "grpo_trajectories_per_scenario": config.training.grpo_trajectories_per_scenario,
+            "orchestrator_budget": config.training.orchestrator_budget,
         },
         "storage": {
             "memory_file_path": config.memory_file_path,

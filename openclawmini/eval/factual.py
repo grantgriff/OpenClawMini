@@ -21,6 +21,7 @@ class FactualResult:
     question: str
     response: str
     correct: bool
+    category: str = ""
     matched_keywords: list[str] = field(default_factory=list)
     expected_keywords: list[str] = field(default_factory=list)
     source_fact: str = ""
@@ -34,13 +35,16 @@ class FactualEvalSummary:
     total_count: int
 
     def by_category(self) -> dict[str, float]:
-        """Per-category accuracy."""
+        """Per-category accuracy. Returns {category: accuracy} for each category."""
         from collections import defaultdict
-        cat_correct: dict[str, list[bool]] = defaultdict(list)
+        cat_data: dict[str, list[bool]] = defaultdict(list)
         for r in self.results:
-            # We don't track category here but we can add it later
-            pass
-        return {}
+            cat = r.category or "other"
+            cat_data[cat].append(r.correct)
+        return {
+            cat: round(sum(vals) / max(len(vals), 1), 4)
+            for cat, vals in cat_data.items()
+        }
 
 
 class FactualEvaluator:
@@ -102,6 +106,7 @@ class FactualEvaluator:
                 question=q.question,
                 response=response,
                 correct=correct,
+                category=str(q.category),
                 matched_keywords=matched,
                 expected_keywords=q.expected_keywords,
                 source_fact=q.source_fact_content,

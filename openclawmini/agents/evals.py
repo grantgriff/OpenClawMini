@@ -42,11 +42,14 @@ class EvalsAgent:
         eval_store_path: str = "./data/evals/eval_set.json",
         results_dir: str = "./data/evals/results",
         wb_logger: Optional[WBLogger] = None,
+        data_cleansing_agent=None,
     ) -> None:
         self._extractor = gemini_extractor
         self._eval_store = EvalSetStore(eval_store_path)
         self._results_store = EvalResultsStore(results_dir)
         self._wb = wb_logger or WBLogger.from_env()
+        # Optional DataCleansingAgent for DataSimulator-based question augmentation
+        self._data_agent = data_cleansing_agent
 
     # ── Eval set generation ────────────────────────────────────
 
@@ -71,6 +74,28 @@ class EvalsAgent:
 
         generator = EvalSetGenerator(gemini_extractor=self._extractor)
         eval_set = generator.generate(memory)
+
+        # Augment factual questions with DataSimulator-generated prompts
+        if self._data_agent is not None:
+            try:
+                extra_prompts = self._data_agent.generate_question_prompts(
+                    memory, count=30
+                )
+                from openclawmini.eval.eval_set import FactualQuestion
+                existing_qs = {q.question for q in eval_set.factual_questions}
+                for prompt_text in extra_prompts:
+                    if prompt_text and prompt_text not in existing_qs:
+                        eval_set.factual_questions.append(FactualQuestion(
+                            question=prompt_text,
+                            expected_keywords=[],
+                            category="other",
+                            source_fact_id="datasimulator",
+                            source_fact_content="",
+                        ))
+                        existing_qs.add(prompt_text)
+            except Exception:
+                pass  # Augmentation is best-effort
+
         self._eval_store.save(eval_set)
         self._wb.log_eval_set(eval_set)
         return eval_set

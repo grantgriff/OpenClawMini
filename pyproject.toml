@@ -36,6 +36,10 @@ dependencies = [
     "weave>=0.50",
     # ART — W&B/OpenPipe Serverless RL framework (SFT + GRPO via CoreWeave)
     "openpipe-art>=0.6",
+    # Anthropic SDK (Claude Opus orchestrator)
+    "anthropic>=0.34",
+    # HuggingFace Hub (model export/upload after fine-tuning)
+    "huggingface_hub>=0.20",
 ]
 
 [project.scripts]

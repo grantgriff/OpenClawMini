@@ -47,8 +47,12 @@ class EvalResults:
     # Combined
     overall_accuracy: float = 0.0
 
+    # Per-category factual accuracy {category: accuracy}
+    category_accuracy: dict = field(default_factory=dict)
+
     # Routing signal
     weak_dimension: str = ""       # "factual" or "stylistic"
+    weak_categories: list = field(default_factory=list)  # categories below threshold
     recommended_action: str = ""   # "sft", "grpo", or "complete"
 
     @classmethod
@@ -60,6 +64,12 @@ class EvalResults:
     ) -> "EvalResults":
         overall = round(0.5 * factual.accuracy + 0.5 * stylistic.accuracy, 4)
         weak = "factual" if factual.accuracy <= stylistic.accuracy else "stylistic"
+        cat_acc = factual.by_category()
+        # Categories below 60% accuracy are "weak"
+        weak_cats = sorted(
+            [cat for cat, acc in cat_acc.items() if acc < 0.60],
+            key=lambda c: cat_acc[c],
+        )
         return cls(
             stage=stage,
             factual_accuracy=factual.accuracy,
@@ -70,17 +80,25 @@ class EvalResults:
             stylistic_total=stylistic.total_count,
             stylistic_details=stylistic.results,
             overall_accuracy=overall,
+            category_accuracy=cat_acc,
             weak_dimension=weak,
+            weak_categories=weak_cats,
         )
 
     def summary_lines(self) -> list[str]:
-        return [
+        lines = [
             f"  Factual accuracy:    {self.factual_accuracy:.0%}  ({self.factual_correct}/{self.factual_total})",
             f"  Stylistic accuracy:  {self.stylistic_accuracy:.0%}  ({self.stylistic_total} prompts)",
             f"  Overall accuracy:    {self.overall_accuracy:.0%}",
             f"  Weak dimension:      {self.weak_dimension}",
             f"  Recommended action:  {self.recommended_action}",
         ]
+        if self.category_accuracy:
+            lines.append("  Per-category factual accuracy:")
+            for cat, acc in sorted(self.category_accuracy.items(), key=lambda x: x[1]):
+                marker = " ⚠" if acc < 0.60 else ""
+                lines.append(f"    {cat:<16} {acc:.0%}{marker}")
+        return lines
 
     def to_dict(self) -> dict:
         return {
@@ -92,6 +110,8 @@ class EvalResults:
             "stylistic_accuracy": self.stylistic_accuracy,
             "stylistic_total": self.stylistic_total,
             "overall_accuracy": self.overall_accuracy,
+            "category_accuracy": self.category_accuracy,
+            "weak_categories": self.weak_categories,
             "weak_dimension": self.weak_dimension,
             "recommended_action": self.recommended_action,
             # Store a sample of details (not all, to keep file sizes manageable)
