@@ -315,14 +315,19 @@ def cmd_init() -> None:
     console.print()
     print_panel(
         f"[bold {COLORS['orange_5']}]✓ Setup complete![/]\n\n"
-        f"Run [bold cyan]openclawmini run[/] to start training.",
+        f"  [bold cyan]openclawmini train[/]  — autonomous: collects memory + loops SFT→GRPO until done\n"
+        f"  [bold cyan]openclawmini run[/]    — manual: step-by-step wizard, one pass through the pipeline",
         title="🟠 OpenClawMini",
     )
 
 
 @app.command("run")
 def cmd_run() -> None:
-    """Start or continue the training pipeline."""
+    """Manual pipeline wizard — step-by-step, one pass through research → SFT → GRPO.
+
+    Use 'openclawmini train' for the fully autonomous loop that dynamically
+    repeats SFT/GRPO until your target accuracy is reached.
+    """
     load_env()
     print_banner()
 
@@ -1077,9 +1082,12 @@ def _ascii_bar(value: float, width: int = 12) -> str:
 @app.command("train")
 def cmd_train(
     budget: float = typer.Option(None, "--budget", "-b", help="USD budget cap (overrides config)."),
-    auto: bool = typer.Option(True, "--auto/--no-auto", help="Run fully autonomous (default: True)."),
 ) -> None:
-    """Run the full autonomous training loop (BASE → SFT → GRPO) via OrchestratorAgent."""
+    """Collect memory, then run the autonomous SFT→GRPO loop until target accuracy is reached.
+
+    Phase 1 (interactive): Gmail OAuth, web research, file uploads → builds memory.json
+    Phase 2 (autonomous):  OrchestratorAgent dynamically decides SFT vs GRPO each round
+    """
     load_env()
     print_banner()
 
@@ -1093,27 +1101,82 @@ def cmd_train(
     if budget is not None:
         config.training.orchestrator_budget = budget
 
-    from openclawmini.memory.store import MemoryStore
+    from openclawmini.memory import MemoryStore, Memory
 
-    store = MemoryStore(config.training.memory_file_path)
-    memory = store.load()
+    memory_path = Path(config.memory_file_path)
+    store = MemoryStore(str(memory_path))
+
+    # ── PHASE 1: Memory collection ─────────────────────────────
+    print_panel(
+        f"[bold {COLORS['orange_5']}]Phase 1 — Memory Collection[/]\n\n"
+        f"[dim]We'll gather your data from configured sources, then hand off\n"
+        f"to the autonomous orchestrator for training.[/]",
+        title="🟠 OpenClawMini Train",
+    )
+
+    if memory_path.exists():
+        memory = store.load()
+        stats = memory.stats()
+        last_updated = memory.user.last_updated.strftime("%Y-%m-%d %H:%M") if memory.user.last_updated else "unknown"
+
+        console.print(
+            f"\n[{COLORS['orange_3']}]Existing memory found:[/]  "
+            f"[cyan]{stats['total_items']} items[/]  "
+            f"[dim](last updated {last_updated})[/]\n"
+        )
+        console.print(f"  [{COLORS['orange_4']}][1][/] Use existing memory and go straight to training")
+        console.print(f"  [{COLORS['orange_4']}][2][/] Refresh memory first (re-research + merge), then train")
+        console.print(f"  [{COLORS['orange_4']}][3][/] Start fresh (delete memory, research from scratch, then train)\n")
+
+        choice = _prompt_int("  Your choice", 1)
+
+        if choice == 2:
+            _run_research(config, store, memory, merge=True)
+        elif choice == 3:
+            if Confirm.ask("  [red]Delete all memory and start fresh?[/]", default=False, console=console):
+                memory_path.unlink(missing_ok=True)
+                memory = Memory()
+                memory.user.name = config.user.name
+                memory.user.email = config.user.email
+                _run_research(config, store, memory, merge=False)
+            else:
+                console.print("[dim]Cancelled.[/]")
+                raise typer.Exit(0)
+        # choice == 1: use existing, fall through
+    else:
+        # First run — no memory yet, must research
+        memory = Memory()
+        memory.user.name = config.user.name
+        memory.user.email = config.user.email
+        console.print(f"\n[{COLORS['orange_3']}]No memory found — starting research...[/]\n")
+        _run_research(config, store, memory, merge=False)
 
     mem_stats = memory.stats()
     if mem_stats.get("total_items", 0) == 0:
         console.print(
-            f"[red]Memory is empty.[/] Run [bold cyan]openclawmini run[/] first to collect your data."
+            f"[red]Memory is still empty after research.[/] "
+            f"Check your data sources in [dim]config.yaml[/] and API keys in [dim].env[/]."
         )
         raise typer.Exit(1)
 
+    # ── Generate eval set silently (no interactive prompts) ────
+    console.print(f"\n[bold {COLORS['orange_2']}]📊 Generating Eval Set[/]")
+    console.print(f"[dim]Building factual questions + stylistic prompts from memory...[/]\n")
+    _ensure_eval_set(config, memory)
+
+    # ── PHASE 2: Autonomous training loop ─────────────────────
     print_panel(
-        f"[bold {COLORS['orange_5']}]Autonomous Training Loop[/]\n\n"
+        f"[bold {COLORS['orange_5']}]Phase 2 — Autonomous Training Loop[/]\n\n"
         f"  Memory:      [cyan]{mem_stats['total_items']} items[/] "
         f"({mem_stats['facts']} facts, {mem_stats['writing_samples']} writing samples)\n"
         f"  Target:      [cyan]{config.training.final_target_accuracy:.0%}[/] overall accuracy\n"
         f"  Budget:      [cyan]${config.training.orchestrator_budget:.0f}[/] USD\n"
         f"  Orchestrator:[cyan]{config.orchestrator.model}[/]\n"
-        f"  Base model:  [cyan]{config.base_model.model}[/]",
-        title="🟠 OpenClawMini Train",
+        f"  Base model:  [cyan]{config.base_model.model}[/]\n\n"
+        f"[dim]The orchestrator will now autonomously evaluate the base model,\n"
+        f"generate training data, run SFT and GRPO, re-evaluate, and repeat\n"
+        f"until the target accuracy is reached or the budget is exhausted.[/]",
+        title="🟠 Autonomous Loop",
     )
 
     from openclawmini.agents.orchestrator_agent import OrchestratorAgent
@@ -1121,19 +1184,17 @@ def cmd_train(
     orchestrator = OrchestratorAgent.from_env(config, memory, store)
 
     try:
-        with console.status(f"[bold {COLORS['orange_3']}]Orchestrator running...[/]"):
+        with console.status(f"[bold {COLORS['orange_3']}]Orchestrator running autonomously...[/]"):
             result = orchestrator.run()
     except KeyboardInterrupt:
-        console.print(f"\n[yellow]Training interrupted by user.[/]")
+        console.print(f"\n[yellow]Training interrupted.[/]  Progress saved to data/orchestrator/state.json")
         raise typer.Exit(0)
     except Exception as e:
         console.print(f"[red]Training loop failed: {e}[/]")
         raise typer.Exit(1)
 
     # ── Final results ──────────────────────────────────────────
-    target_str = (
-        f"[bold green]Yes ✓[/]" if result.target_reached else f"[yellow]No[/]"
-    )
+    target_str = f"[bold green]Yes ✓[/]" if result.target_reached else f"[yellow]No[/]"
     print_panel(
         f"[bold {COLORS['orange_5']}]{'🎉 TARGET REACHED!' if result.target_reached else 'Training Complete'}[/]\n\n"
         + "\n".join(result.summary_lines())
@@ -1152,6 +1213,33 @@ def cmd_train(
                 logger.log_eval(entry)
     except Exception:
         pass
+
+
+def _ensure_eval_set(config: Config, memory) -> None:
+    """Generate eval set from memory, or load existing one — no interactive prompts."""
+    from openclawmini.agents.evals import EvalsAgent
+    from openclawmini.eval.eval_set import EvalSetStore
+
+    eval_store = EvalSetStore()
+    extractor = _build_gemini_extractor()
+    agent = EvalsAgent(gemini_extractor=extractor)
+
+    if eval_store.exists():
+        eval_set = eval_store.load()
+        stats = eval_set.stats() if eval_set else {}
+        console.print(
+            f"[{COLORS['orange_3']}]Eval set loaded:[/]  "
+            f"[cyan]{stats.get('factual_questions', 0)}[/] factual,  "
+            f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic\n"
+        )
+    else:
+        eval_set = agent.generate_eval_set(memory)
+        stats = eval_set.stats()
+        console.print(
+            f"[bold {COLORS['orange_5']}]✓ Eval set ready:[/]  "
+            f"[cyan]{stats.get('factual_questions', 0)}[/] factual,  "
+            f"[cyan]{stats.get('stylistic_prompts', 0)}[/] stylistic\n"
+        )
 
 
 @app.command("chat")
