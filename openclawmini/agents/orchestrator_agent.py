@@ -94,21 +94,25 @@ within a ${budget:.0f} budget.
 
 You control a fine-tuning pipeline with these tools:
 - run_eval: Evaluate current model accuracy (factual + stylistic + per-category)
-- run_sft: Run supervised fine-tuning (~$10-15, improves factual knowledge)
-- run_grpo: Run GRPO RL training (~$7-12, improves writing style alignment)
-- targeted_research: Targeted web research on a weak category (~$0.50)
-- generate_sft_data: Generate new SFT training data (free, uses DataSimulator)
+- run_sft: Run supervised fine-tuning (W&B compute FREE; cost ~$1.50 for data gen)
+- run_grpo: Run GRPO RL training (W&B compute FREE; cost ~$0.50 for RULER scoring)
+- targeted_research: Targeted web research on a weak category (~$0.25)
+- generate_sft_data: Generate new SFT training data (~$1.00 for DataSimulator)
 - check_status: Check budget, training history, current model
 - stop: Stop when done
+
+Cost reality: W&B/CoreWeave training is FREE. Costs come from Gemini API calls
+(DataSimulator, RULER, eval judge) and Claude Opus (this orchestrator).
+A full BASE→SFT→GRPO loop costs approximately $2-4. With a ${budget:.0f} budget
+you can run 6+ complete loops.
 
 Decision guidelines:
 1. Always start with run_eval("base") if no eval history exists
 2. If factual accuracy < {sft_threshold:.0%}: research weak categories → generate_sft_data → run_sft
 3. If factual accuracy >= threshold but overall < target: run_grpo for stylistic improvement
 4. Target specific weak categories with targeted_research before retraining
-5. Stop at least $3 before budget runs out
-6. Don't repeat an action if the last identical action didn't improve accuracy
-7. Be decisive — one action per round, no overthinking
+5. Stop when target reached OR after 3 consecutive rounds with no improvement
+6. Be decisive — one action per round, no overthinking
 """
 
     def __init__(
@@ -347,7 +351,9 @@ Decision guidelines:
         self._current_model_name = sft_result.model_name
         self._current_stage = "sft"
 
-        cost_est = 12.0
+        # W&B/CoreWeave SFT training is FREE (compute covered by W&B platform).
+        # Real costs: Gemini DataSimulator calls (~$1-2) + Mistral eval (~$0.05)
+        cost_est = 1.5
         self._state["cost_usd"] = self._state.get("cost_usd", 0.0) + cost_est
         self._state.setdefault("training_history", []).append({
             "action": "sft",
@@ -403,7 +409,9 @@ Decision guidelines:
         self._current_model_name = grpo_result.model_name
         self._current_stage = "grpo"
 
-        cost_est = 10.0
+        # W&B/CoreWeave GRPO training is FREE (compute covered by W&B platform).
+        # Real costs: Gemini Flash RULER scoring (~$0.20) + Gemini eval (~$0.10)
+        cost_est = 0.50
         self._state["cost_usd"] = self._state.get("cost_usd", 0.0) + cost_est
         self._state.setdefault("training_history", []).append({
             "action": "grpo",

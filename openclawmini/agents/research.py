@@ -3,7 +3,9 @@ Research Agent — gathers and classifies user data from configured sources.
 
 Sources implemented:
   - Gmail (sent emails) — fact extraction via Gemini + writing samples
-  - Web search (DuckDuckGo) — public mentions, LinkedIn public profile
+  - Web search (Brave API primary, DuckDuckGo fallback) — public mentions
+  - LinkedIn public profile — with fallback messaging
+  - GitHub profile + repos — via public GitHub API (no auth needed)
   - File upload (ChatGPT/Claude exports) — conversation logs → facts + samples
 
 All data access is READ-ONLY.
@@ -140,14 +142,14 @@ class ResearchAgent:
         user_name: str,
         category: str,
         memory,
-        max_results: int = 5,
+        max_results: int = 7,
     ) -> ResearchResult:
         """
         Run targeted web research to gather more facts about a specific category
         the model is weak on (e.g. "work", "education", "skills").
 
-        Uses DuckDuckGo with category-specific queries, then extracts facts
-        with Gemini using a category-focused prompt.
+        Uses Brave/DuckDuckGo with 5 category-specific queries + parallel page
+        scraping. For "skills" and "achievements", also checks GitHub profile.
 
         Args:
             user_name: The user's name for search queries.
@@ -158,7 +160,13 @@ class ResearchAgent:
         Returns:
             ResearchResult with counts of items added.
         """
-        from openclawmini.integrations.web_search import search_duckduckgo, scrape_page
+        from openclawmini.integrations.web_search import (
+            search,
+            scrape_pages_parallel,
+            fetch_github_profile,
+            github_profile_to_text,
+            detect_github_username,
+        )
 
         result = ResearchResult()
         extractor = self._get_extractor(result, f"Targeted research ({category})")
@@ -167,34 +175,60 @@ class ResearchAgent:
 
         queries = _build_targeted_queries(user_name, category)
         seen_urls: set[str] = set()
+        all_search_results = []
 
-        for query in queries[:3]:
-            search_result = search_duckduckgo(query, max_results=max_results)
-            if search_result.error:
-                result.errors.append(f"Search error: {search_result.error}")
-                break
+        # Run up to 5 queries, collect all unique URLs
+        for query in queries[:5]:
+            sr = search(query, max_results=max_results)
+            for r in sr.results:
+                if r.url and r.url not in seen_urls:
+                    seen_urls.add(r.url)
+                    all_search_results.append(r)
 
-            for r in search_result.results:
-                if not r.url or r.url in seen_urls:
-                    continue
-                seen_urls.add(r.url)
+        # Parallel scraping of all collected URLs
+        urls_to_scrape = [r.url for r in all_search_results if r.url]
+        scraped = scrape_pages_parallel(urls_to_scrape, max_workers=6)
 
-                page_text = scrape_page(r.url) or r.snippet
-                if not page_text:
-                    continue
+        for r in all_search_results:
+            page_text = scraped.get(r.url, "") or r.snippet
+            if not page_text:
+                continue
+            facts = _extract_targeted_facts(
+                extractor=extractor,
+                page_text=page_text,
+                url=r.url,
+                user_name=user_name,
+                category=category,
+            )
+            for fact in facts:
+                before = len(memory.facts)
+                self.store.add_fact(memory, fact)
+                if len(memory.facts) > before:
+                    result.facts_added += 1
 
-                facts = _extract_targeted_facts(
-                    extractor=extractor,
-                    page_text=page_text,
-                    url=r.url,
-                    user_name=user_name,
-                    category=category,
-                )
-                for fact in facts:
-                    before = len(memory.facts)
-                    self.store.add_fact(memory, fact)
-                    if len(memory.facts) > before:
-                        result.facts_added += 1
+        # GitHub profile is especially useful for skills + achievements
+        if category in ("skills", "achievements", "work"):
+            email = getattr(self.memory.user, "email", "") if self.memory else ""
+            github_username = (
+                os.getenv("GITHUB_USERNAME", "").strip()
+                or detect_github_username(user_name, email)
+            )
+            if github_username:
+                gh_data = fetch_github_profile(github_username)
+                if gh_data:
+                    gh_text = github_profile_to_text(gh_data)
+                    facts = _extract_targeted_facts(
+                        extractor=extractor,
+                        page_text=gh_text,
+                        url=f"https://github.com/{github_username}",
+                        user_name=user_name,
+                        category=category,
+                    )
+                    for fact in facts:
+                        before = len(memory.facts)
+                        self.store.add_fact(memory, fact)
+                        if len(memory.facts) > before:
+                            result.facts_added += 1
 
         return result
 
@@ -328,11 +362,19 @@ class ResearchAgent:
         result: ResearchResult,
         progress_callback=None,
     ) -> None:
-        """Search DuckDuckGo for public mentions and scrape for facts."""
+        """
+        Multi-source web research:
+          1. Brave Search (primary) or DuckDuckGo fallback — up to 5 queries
+          2. GitHub profile scrape (if detectable from name/email)
+          3. Parallel page scraping for all found URLs
+        """
         from openclawmini.integrations.web_search import (
-            search_duckduckgo,
-            scrape_page,
+            search,
+            scrape_pages_parallel,
             build_search_queries,
+            fetch_github_profile,
+            github_profile_to_text,
+            detect_github_username,
         )
 
         extractor = self._get_extractor(result, "Web search")
@@ -342,6 +384,7 @@ class ResearchAgent:
         name = self.memory.user.name
         email = self.memory.user.email
         linkedin_url = os.getenv("LINKEDIN_PROFILE_URL", "").strip()
+        github_username = os.getenv("GITHUB_USERNAME", "").strip()
 
         if not name:
             result.errors.append(
@@ -350,32 +393,50 @@ class ResearchAgent:
             return
 
         queries = build_search_queries(name, email, linkedin_url)
-
         seen_urls: set[str] = set()
-        total_queries = min(len(queries), 3)
+        total_queries = min(len(queries), 5)
 
-        for i, query in enumerate(queries[:3]):
+        # ── Collect all URLs from search queries ──────────────
+        all_results = []
+        for i, query in enumerate(queries[:5]):
             if progress_callback:
                 progress_callback("web_search", i + 1, total_queries)
+            sr = search(query, max_results=5)
+            for r in sr.results:
+                if r.url and r.url not in seen_urls:
+                    seen_urls.add(r.url)
+                    all_results.append(r)
 
-            search_result = search_duckduckgo(query, max_results=3)
-            if search_result.error:
-                result.errors.append(f"Web search error: {search_result.error}")
-                break
+        # ── Parallel page scraping ────────────────────────────
+        urls_to_scrape = [r.url for r in all_results if r.url]
+        scraped = scrape_pages_parallel(urls_to_scrape, max_workers=6)
 
-            for r in search_result.results:
-                if not r.url or r.url in seen_urls:
-                    continue
-                seen_urls.add(r.url)
+        for r in all_results:
+            page_text = scraped.get(r.url, "") or r.snippet
+            if not page_text:
+                continue
+            facts = extractor.extract_facts_from_web(
+                page_text=page_text,
+                url=r.url,
+                user_name=name,
+            )
+            for fact in facts:
+                before = len(self.memory.facts)
+                self.store.add_fact(self.memory, fact)
+                if len(self.memory.facts) > before:
+                    result.facts_added += 1
 
-                # Scrape page for richer content; fall back to snippet
-                page_text = scrape_page(r.url) or r.snippet
-                if not page_text:
-                    continue
+        # ── GitHub profile (extra signal for devs) ────────────
+        if not github_username:
+            github_username = detect_github_username(name, email)
 
+        if github_username:
+            gh_data = fetch_github_profile(github_username)
+            if gh_data:
+                gh_text = github_profile_to_text(gh_data)
                 facts = extractor.extract_facts_from_web(
-                    page_text=page_text,
-                    url=r.url,
+                    page_text=gh_text,
+                    url=f"https://github.com/{github_username}",
                     user_name=name,
                 )
                 for fact in facts:
