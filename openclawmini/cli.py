@@ -796,6 +796,15 @@ def _run_data_cleansing(config: Config, memory) -> None:
         if result.grpo_path:
             body += f"\n  GRPO → [dim]{result.grpo_path}[/]"
 
+        # Log to W&B if configured
+        try:
+            from openclawmini.integrations.wb_logger import WBLogger
+            WBLogger.from_env().log_training_data(result)
+        except Exception:
+            pass
+
+        ds_tag = " [dim](via DataSimulator)[/]" if result.used_datasimulator else " [dim](template)[/]"
+        body += f"\n  SFT method:{ds_tag}"
         print_panel(body, title="🟠 Data Cleansing")
         console.print(f"[dim]SFT training → Task 7 | GRPO training → Task 8[/]\n")
 

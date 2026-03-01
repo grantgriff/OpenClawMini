@@ -18,6 +18,7 @@ from openclawmini.eval.eval_set import EvalSet, EvalSetGenerator, EvalSetStore
 from openclawmini.eval.factual import FactualEvaluator
 from openclawmini.eval.router import Action, EvalResults, EvalResultsStore, decide_next_action
 from openclawmini.eval.stylistic import StylisticEvaluator
+from openclawmini.integrations.wb_logger import WBLogger
 
 
 class EvalsAgent:
@@ -40,10 +41,12 @@ class EvalsAgent:
         gemini_extractor=None,
         eval_store_path: str = "./data/evals/eval_set.json",
         results_dir: str = "./data/evals/results",
+        wb_logger: Optional[WBLogger] = None,
     ) -> None:
         self._extractor = gemini_extractor
         self._eval_store = EvalSetStore(eval_store_path)
         self._results_store = EvalResultsStore(results_dir)
+        self._wb = wb_logger or WBLogger.from_env()
 
     # ── Eval set generation ────────────────────────────────────
 
@@ -69,6 +72,7 @@ class EvalsAgent:
         generator = EvalSetGenerator(gemini_extractor=self._extractor)
         eval_set = generator.generate(memory)
         self._eval_store.save(eval_set)
+        self._wb.log_eval_set(eval_set)
         return eval_set
 
     def load_eval_set(self) -> Optional[EvalSet]:
@@ -139,8 +143,9 @@ class EvalsAgent:
             stylistic=stylistic_summary,
         )
 
-        # ── Save results ──────────────────────────────────────
+        # ── Save results + log to W&B ─────────────────────────
         self._results_store.save(results)
+        self._wb.log_eval(results)
 
         return results
 

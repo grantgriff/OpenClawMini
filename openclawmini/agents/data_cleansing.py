@@ -1,28 +1,30 @@
 """
 Data Cleansing Agent — orchestrates SFT and GRPO data generation.
 
-Transforms raw memory into clean, high-quality training datasets:
-  - SFT data:  Q&A pairs from facts  (factual knowledge training)
-  - GRPO data: style scenarios from writing samples (style alignment)
+SFT data  → uses DataSimulator SDK (grantgriff/datasimulator):
+  Writes memory.facts + preferences to a profile .txt, then calls
+  DataSimulator(source=profile.txt, data_type="sft") to generate
+  high-quality Q&A pairs in Mistral fine-tuning JSONL format.
 
-Key design decisions:
-  - SFT target:  200 samples (config.training.sft_sample_count)
-  - GRPO target: 100 scenarios (config.training.grpo_scenario_count)
-  - Quality threshold filters out low-quality generated pairs
-  - Uses Gemini Pro for high-quality generation; template fallback if unavailable
-  - Output: timestamped JSONL files in data/training/
+GRPO data → custom GRPODataGenerator:
+  DataSimulator generates prompts only (no reference_response), so we
+  keep the custom approach that derives prompts FROM actual writing
+  samples, preserving the (prompt, reference) pairing RULER needs.
+
+Output: timestamped JSONL files in data/training/
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from openclawmini.training.sft_generator import SFTDataGenerator, SFTSample
 from openclawmini.training.grpo_generator import GRPODataGenerator, GRPOScenario
+from openclawmini.training.sft_generator import SFTDataGenerator, SFTSample
 
 
 def _now_tag() -> str:
@@ -40,11 +42,13 @@ class DataCleansingResult:
     facts_used: int = 0
     samples_used: int = 0
     posts_used: int = 0
+    used_datasimulator: bool = False
     stage: str = "cleansing"
 
     def summary_lines(self) -> list[str]:
         lines = [
-            f"SFT samples generated:    {len(self.sft_samples)}",
+            f"SFT samples generated:    {len(self.sft_samples)}"
+            + (" (DataSimulator)" if self.used_datasimulator else " (template)"),
             f"GRPO scenarios generated: {len(self.grpo_scenarios)}",
             f"Facts processed:          {self.facts_used}",
             f"Writing samples used:     {self.samples_used}",
@@ -59,16 +63,17 @@ class DataCleansingResult:
 
 class DataCleansingAgent:
     """
-    Orchestrates generation of SFT and GRPO training data from memory.
+    Orchestrates SFT and GRPO training data generation from memory.
 
-    SFT data  — teaches the model WHAT the user knows (factual Q&A pairs).
-    GRPO data — teaches the model HOW the user writes (style scenarios).
+    SFT  — uses DataSimulator SDK with memory.facts as source document.
+           Falls back to Gemini-direct or template generation if unavailable.
+    GRPO — uses custom GRPODataGenerator (needs actual writing as reference).
 
     Args:
-        llm_client: Gemini Pro (or similar) LLM with .complete(prompt) -> str.
+        llm_client: Gemini extractor for fallback/GRPO generation.
         sft_target: Target number of SFT training examples.
         grpo_target: Target number of GRPO scenarios.
-        quality_threshold: Min quality score (0-10) to include a sample.
+        quality_threshold: Min quality score (0-10) to keep a sample.
         output_dir: Directory to write training JSONL files.
         user_name: User's name for persona framing in prompts.
     """
@@ -91,21 +96,32 @@ class DataCleansingAgent:
         self.output_dir = Path(output_dir)
         self.user_name = user_name
 
+    # ── SFT generation (DataSimulator primary) ─────────────────
+
     def generate_sft_data(
         self,
         memory,
         progress_callback=None,
-    ) -> tuple[list[SFTSample], Path]:
+    ) -> tuple[list[SFTSample], Path, bool]:
         """
         Generate SFT Q&A pairs from memory.facts.
 
-        Args:
-            memory: Memory object with .facts list.
-            progress_callback: optional callable(current, total)
+        Tries DataSimulator SDK first; falls back to Gemini-direct or template.
 
         Returns:
-            (samples, jsonl_output_path)
+            (samples, jsonl_path, used_datasimulator)
         """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        tag = _now_tag()
+
+        try:
+            samples, path = self._generate_sft_datasimulator(memory, tag)
+            return samples, path, True
+        except Exception as ds_err:
+            # Log the reason for fallback (visible in verbose runs)
+            _warn(f"DataSimulator SFT unavailable ({ds_err}), using fallback generator")
+
+        # Fallback: Gemini-direct / template
         generator = SFTDataGenerator(
             llm_client=self._llm,
             user_name=self.user_name,
@@ -116,12 +132,104 @@ class DataCleansingAgent:
             target_count=self.sft_target,
             progress_callback=progress_callback,
         )
-        tag = _now_tag()
-        jsonl_path = self.output_dir / f"sft_{tag}.jsonl"
-        meta_path = self.output_dir / f"sft_{tag}_meta.json"
-        generator.save_jsonl(samples, jsonl_path)
-        generator.save_metadata(samples, meta_path)
-        return samples, jsonl_path
+        path = self.output_dir / f"sft_{tag}.jsonl"
+        meta = self.output_dir / f"sft_{tag}_meta.json"
+        generator.save_jsonl(samples, path)
+        generator.save_metadata(samples, meta)
+        return samples, path, False
+
+    def _generate_sft_datasimulator(self, memory, tag: str) -> tuple[list[SFTSample], Path]:
+        """Run DataSimulator SDK for SFT data generation."""
+        from datasimulator import DataSimulator  # type: ignore[import]
+
+        if not memory.facts:
+            raise ValueError("No facts in memory — nothing to generate SFT data from")
+
+        # Write structured profile to disk (DataSimulator requires a file source)
+        profile_path = self._write_memory_profile(memory)
+
+        output_path = self.output_dir / f"sft_{tag}.jsonl"
+
+        sdk = DataSimulator(
+            source=str(profile_path),
+            data_type="sft",
+            models={
+                "generator": "gemini-2.0-flash",
+                "verifier": "gemini-2.0-flash",
+            },
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            quality_threshold=self.quality_threshold,
+            max_cost=15.0,
+            batch_size=10,
+            parallel_batches=2,
+            interactive=False,
+            checkpoint_dir=str(self.output_dir / "checkpoints"),
+        )
+
+        domain_context = self._sft_domain_context(memory)
+        dataset = sdk.generate(
+            num_samples=self.sft_target,
+            domain_context=domain_context,
+            show_progress=False,
+        )
+        dataset.save(str(output_path))
+
+        # Parse the saved JSONL back into SFTSample objects
+        samples = _parse_sft_jsonl(output_path)
+        return samples, output_path
+
+    def _write_memory_profile(self, memory) -> Path:
+        """Write all facts + preferences as a structured plain-text profile file."""
+        lines = [f"# Personal Profile: {self.user_name}", ""]
+
+        # Group facts by category
+        by_cat: dict[str, list[str]] = {}
+        for fact in memory.facts:
+            cat = str(fact.category).split(".")[-1].replace("_", " ").title()
+            by_cat.setdefault(cat, []).append(fact.content)
+
+        for cat in sorted(by_cat):
+            lines.append(f"## {cat}")
+            for content in by_cat[cat]:
+                lines.append(f"- {content}")
+            lines.append("")
+
+        if memory.preferences:
+            lines.append("## Preferences & Work Style")
+            for pref in memory.preferences:
+                lines.append(f"- {pref.content}")
+            lines.append("")
+
+        if memory.relationships:
+            lines.append("## Key Relationships")
+            for rel in memory.relationships[:20]:
+                lines.append(f"- {rel.name}: {rel.relationship} ({rel.interaction_frequency})")
+            lines.append("")
+
+        profile_path = self.output_dir / "memory_profile.txt"
+        profile_path.write_text("\n".join(lines), encoding="utf-8")
+        return profile_path
+
+    def _sft_domain_context(self, memory) -> str:
+        fact_count = len(memory.facts)
+        return (
+            f"Generate diverse question-answer training pairs where an AI assistant IS {self.user_name}, "
+            f"responding in first person.\n\n"
+            f"The source document contains {fact_count} verified facts about {self.user_name}'s "
+            f"background, work, education, skills, interests, and personal life.\n\n"
+            f"Requirements:\n"
+            f"- Answer AS {self.user_name} in first person (use 'I', 'my', 'me')\n"
+            f"- Draw ONLY from facts in the source document — no fabrication\n"
+            f"- Vary question types: direct ('Where do you work?'), conversational "
+            f"('Tell me about yourself'), situational, reflective ('What are you proud of?')\n"
+            f"- Answers should sound natural and personal, NOT like a resume bullet point\n"
+            f"- Include a mix of short (1-2 sentence) and longer (3-4 sentence) answers\n"
+            f"- Cover all fact categories: work, education, skills, location, interests, achievements"
+        )
+
+    # ── GRPO generation (custom — needs actual writing as reference) ─
 
     def generate_grpo_data(
         self,
@@ -131,12 +239,9 @@ class DataCleansingAgent:
         """
         Generate GRPO style scenarios from memory.writing_samples and memory.posts.
 
-        Args:
-            memory: Memory object with .writing_samples and .posts lists.
-            progress_callback: optional callable(current, total)
-
-        Returns:
-            (scenarios, jsonl_output_path)
+        Uses custom generator (not DataSimulator) because GRPO requires
+        (prompt, reference_response) pairs where reference_response is ACTUAL
+        user writing — DataSimulator only generates prompts with no reference.
         """
         generator = GRPODataGenerator(
             llm_client=self._llm,
@@ -155,6 +260,8 @@ class DataCleansingAgent:
         generator.save_metadata(scenarios, meta_path)
         return scenarios, jsonl_path
 
+    # ── Full run ───────────────────────────────────────────────
+
     def run(
         self,
         memory,
@@ -164,17 +271,12 @@ class DataCleansingAgent:
         """
         Run full data cleansing: generate both SFT and GRPO datasets.
 
-        Args:
-            memory: Memory object.
-            sft_progress_callback: optional callable(current, total)
-            grpo_progress_callback: optional callable(current, total)
-
         Returns:
             DataCleansingResult with paths, counts, and sample lists.
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        sft_samples, sft_path = self.generate_sft_data(
+        sft_samples, sft_path, used_ds = self.generate_sft_data(
             memory, progress_callback=sft_progress_callback
         )
         grpo_scenarios, grpo_path = self.generate_grpo_data(
@@ -194,6 +296,7 @@ class DataCleansingAgent:
             facts_used=len(memory.facts),
             samples_used=len(memory.writing_samples),
             posts_used=len(memory.posts),
+            used_datasimulator=used_ds,
         )
 
     @classmethod
@@ -213,7 +316,6 @@ class DataCleansingAgent:
         if config is not None:
             sft_target = getattr(config.training, "sft_sample_count", 200)
             grpo_target = getattr(config.training, "grpo_scenario_count", 100)
-            # config.training.quality_threshold is 0-10; generator uses same scale
             quality_threshold = getattr(config.training, "quality_threshold", 7.0) * 0.7
             user_name = getattr(config.user, "name", "") or user_name
 
@@ -224,3 +326,40 @@ class DataCleansingAgent:
             quality_threshold=quality_threshold,
             user_name=user_name,
         )
+
+
+# ── Helpers ────────────────────────────────────────────────────
+
+def _parse_sft_jsonl(path: Path) -> list[SFTSample]:
+    """Read a DataSimulator-saved JSONL file into SFTSample objects."""
+    samples = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    messages = data.get("messages", [])
+                    # DataSimulator may include a system message — keep user+assistant only
+                    user_msg = next((m for m in messages if m.get("role") == "user"), None)
+                    asst_msg = next((m for m in messages if m.get("role") == "assistant"), None)
+                    if user_msg and asst_msg:
+                        samples.append(SFTSample(
+                            messages=[user_msg, asst_msg],
+                            quality_score=7.5,
+                            category="factual",
+                            source_fact_id="datasimulator",
+                        ))
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return samples
+
+
+def _warn(msg: str) -> None:
+    """Print a dim warning to stderr-friendly output."""
+    import sys
+    print(f"[warn] {msg}", file=sys.stderr)

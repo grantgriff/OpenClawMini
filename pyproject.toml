@@ -28,6 +28,10 @@ dependencies = [
     "duckduckgo-search>=6.0",
     # Mistral API (base model inference + fine-tuning)
     "mistralai>=1.0",
+    # DataSimulator SDK (SFT dataset generation)
+    "datasimulator @ git+https://github.com/grantgriff/datasimulator.git",
+    # Weights & Biases (eval metric logging)
+    "wandb>=0.18",
 ]
 
 [project.scripts]

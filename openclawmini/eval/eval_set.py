@@ -110,10 +110,14 @@ class EvalSetGenerator:
 
     Uses Gemini (via GeminiExtractor) for high-quality generation;
     falls back to templates if no LLM is available.
+
+    Guarantees a minimum of MIN_TOTAL_QUESTIONS total questions across
+    both dimensions (pads with template questions if memory is sparse).
     """
 
     MAX_FACTUAL = 50
     MAX_STYLISTIC = 30
+    MIN_TOTAL = 50          # hard floor — always generate at least this many
 
     def __init__(self, gemini_extractor=None) -> None:
         self._llm = gemini_extractor
@@ -131,6 +135,11 @@ class EvalSetGenerator:
         factual_qs = self._build_factual_questions(facts)
         stylistic_ps = self._build_stylistic_prompts(samples, posts, prefs)
 
+        # ── Enforce minimum total ──────────────────────────────
+        factual_qs, stylistic_ps = self._enforce_minimum(
+            factual_qs, stylistic_ps, facts, samples
+        )
+
         return EvalSet(
             factual_questions=factual_qs,
             stylistic_prompts=stylistic_ps,
@@ -138,6 +147,73 @@ class EvalSetGenerator:
             memory_samples_count=len(memory.writing_samples),
             memory_prefs_count=len(memory.preferences),
         )
+
+    def _enforce_minimum(
+        self,
+        factual_qs: list[FactualQuestion],
+        stylistic_ps: list[StylisticPrompt],
+        facts,
+        samples,
+    ) -> tuple[list[FactualQuestion], list[StylisticPrompt]]:
+        """
+        Pad the eval set up to MIN_TOTAL questions if the initial generation
+        produced fewer (e.g. sparse memory with only a handful of facts).
+
+        Strategy:
+          1. Generate extra factual questions from already-used facts with
+             different phrasings (template-based, so always available).
+          2. If still short and we have samples, add more stylistic prompts.
+        """
+        total = len(factual_qs) + len(stylistic_ps)
+        if total >= self.MIN_TOTAL:
+            return factual_qs, stylistic_ps
+
+        deficit = self.MIN_TOTAL - total
+
+        # Extra factual questions via alternative phrasings
+        if facts:
+            extra_factual = self._extra_factual_questions(facts, deficit)
+            factual_qs = factual_qs + extra_factual
+            deficit = max(0, self.MIN_TOTAL - len(factual_qs) - len(stylistic_ps))
+
+        # Still short? Pad with stylistic templates
+        if deficit > 0 and samples:
+            extra_stylistic = self._stylistic_template(
+                samples[:deficit], [], []
+            )
+            # Avoid duplicating already-added prompts
+            existing_prompts = {sp.prompt for sp in stylistic_ps}
+            extra_stylistic = [
+                sp for sp in extra_stylistic if sp.prompt not in existing_prompts
+            ][:deficit]
+            stylistic_ps = stylistic_ps + extra_stylistic
+
+        return factual_qs, stylistic_ps
+
+    def _extra_factual_questions(self, facts, count: int) -> list[FactualQuestion]:
+        """Generate additional factual questions with alternative phrasings."""
+        _ALT_PHRASING = [
+            ("Can you tell me about your {category}?",   ["about", "background"]),
+            ("How would you describe your {category}?",  ["describe", "experience"]),
+            ("What can you share about your {category}?",["share", "about"]),
+            ("Give me an overview of your {category}.",  ["overview", "experience"]),
+        ]
+        extra = []
+        for i, fact in enumerate(facts * 4):  # cycle through facts
+            if len(extra) >= count:
+                break
+            template, base_kw = _ALT_PHRASING[i % len(_ALT_PHRASING)]
+            cat = str(fact.category).split(".")[-1].lower().replace("_", " ")
+            q_text = template.format(category=cat)
+            content_kw = [w.lower() for w in fact.content.split() if len(w) > 3][:4]
+            extra.append(FactualQuestion(
+                question=q_text,
+                expected_keywords=list(set(base_kw + content_kw)),
+                category=str(fact.category),
+                source_fact_id=fact.id,
+                source_fact_content=fact.content,
+            ))
+        return extra
 
     # ── Factual question generation ────────────────────────────
 
