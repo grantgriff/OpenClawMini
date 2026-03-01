@@ -394,14 +394,14 @@ class ResearchAgent:
 
         queries = build_search_queries(name, email, linkedin_url)
         seen_urls: set[str] = set()
-        total_queries = min(len(queries), 5)
+        total_queries = min(len(queries), 8)
 
         # ── Collect all URLs from search queries ──────────────
         all_results = []
-        for i, query in enumerate(queries[:5]):
+        for i, query in enumerate(queries[:8]):
             if progress_callback:
                 progress_callback("web_search", i + 1, total_queries)
-            sr = search(query, max_results=5)
+            sr = search(query, max_results=10)
             for r in sr.results:
                 if r.url and r.url not in seen_urls:
                     seen_urls.add(r.url)
@@ -561,23 +561,32 @@ class ResearchAgent:
 
     def _get_extractor(self, result: ResearchResult, context: str):
         """
-        Return a GeminiExtractor, building one from env if llm_client wasn't set.
-        Appends an error to result and returns None if no API key available.
+        Return an extractor with extract_facts_from_web(), building one from env if needed.
+        Tries Gemini first (higher quality), then Mistral as fallback.
+        Appends an error and returns None only if neither key is available.
         """
         if self._extractor and hasattr(self._extractor, "extract_facts_from_web"):
             return self._extractor
 
-        # Try to build one on the fly
+        # Try Gemini first
         from openclawmini.integrations.gemini_extractor import GeminiExtractor
         extractor = GeminiExtractor.from_env()
-        if extractor is None:
-            result.errors.append(
-                f"{context} requires GOOGLE_API_KEY. "
-                "Add it to .env or run openclawmini init."
-            )
-            return None
-        self._extractor = extractor
-        return extractor
+        if extractor is not None:
+            self._extractor = extractor
+            return extractor
+
+        # Fall back to Mistral
+        from openclawmini.integrations.mistral_extractor import MistralExtractor
+        extractor = MistralExtractor.from_env()
+        if extractor is not None:
+            self._extractor = extractor
+            return extractor
+
+        result.errors.append(
+            f"{context} requires GOOGLE_API_KEY or MISTRAL_API_KEY. "
+            "Add one to .env or run openclawmini init."
+        )
+        return None
 
 
 # ── Email helpers ─────────────────────────────────────────────
@@ -631,16 +640,20 @@ def _infer_frequency(email) -> str:
 
 def _detect_available_sources() -> dict:
     """Detect which sources are configured based on environment variables."""
+    # Web search runs if we have any extraction backend (Gemini or Mistral).
+    # DuckDuckGo is free so search itself never needs a key; Brave is preferred
+    # if BRAVE_API_KEY is set.
+    has_extractor = bool(
+        os.getenv("GOOGLE_API_KEY", "").strip()
+        or os.getenv("MISTRAL_API_KEY", "").strip()
+    )
     return {
         "gmail": bool(
             os.getenv("GMAIL_CLIENT_ID", "").strip()
             and os.getenv("GMAIL_CLIENT_SECRET", "").strip()
         ),
         "linkedin": bool(os.getenv("LINKEDIN_PROFILE_URL", "").strip()),
-        "web_search": bool(
-            os.getenv("GOOGLE_API_KEY", "").strip()
-            or os.getenv("LINKEDIN_PROFILE_URL", "").strip()
-        ),
+        "web_search": has_extractor or bool(os.getenv("LINKEDIN_PROFILE_URL", "").strip()),
         "file_upload": False,  # Triggered directly from CLI
     }
 

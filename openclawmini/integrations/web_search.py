@@ -333,19 +333,40 @@ def detect_github_username(name: str, email: str = "") -> Optional[str]:
 def build_search_queries(name: str, email: str = "", linkedin_url: str = "") -> list[str]:
     """
     Generate prioritized web search queries to find public information.
+
+    Ordered by expected signal quality. Up to 9 queries covering all major
+    fact categories: work, education, skills, achievements, location, interests.
     """
     queries: list[str] = []
     if not name:
         return queries
 
-    # LinkedIn is highest quality for professional facts
+    # LinkedIn — highest quality for professional facts
     if linkedin_url:
         queries.append(f'"{name}" site:linkedin.com')
     else:
-        queries.append(f'"{name}" linkedin career')
+        queries.append(f'"{name}" linkedin')
 
-    # Professional background
-    queries.append(f'"{name}" professional background career')
+    # Core professional background
+    queries.append(f'"{name}" career job title company')
+
+    # Education
+    queries.append(f'"{name}" education university degree')
+
+    # Skills / expertise
+    queries.append(f'"{name}" skills expertise technology')
+
+    # Achievements / recognition
+    queries.append(f'"{name}" achievements awards recognition')
+
+    # Bio / about
+    queries.append(f'"{name}" background bio about')
+
+    # Interests / projects
+    queries.append(f'"{name}" interests hobbies projects')
+
+    # GitHub (great for dev skills + open-source work)
+    queries.append(f'"{name}" github.com')
 
     # Company domain if we have a non-generic email
     if email and "@" in email:
@@ -355,8 +376,5 @@ def build_search_queries(name: str, email: str = "", linkedin_url: str = "") -> 
             "outlook.com", "icloud.com", "protonmail.com",
         }:
             queries.append(f'"{name}" {domain}')
-
-    # GitHub (great for dev facts)
-    queries.append(f'"{name}" github.com')
 
     return queries
