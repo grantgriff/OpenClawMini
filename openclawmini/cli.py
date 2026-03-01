@@ -655,6 +655,7 @@ def _show_pipeline_status(config: Config, memory, eval_set, eval_stats: dict) ->
         console.print(
             f"[dim]Tip: Add MISTRAL_API_KEY to .env to run the base model eval.[/]\n"
         )
+        _offer_data_generation(config, memory)
         return
 
     want_base_eval = Confirm.ask(
@@ -662,11 +663,145 @@ def _show_pipeline_status(config: Config, memory, eval_set, eval_stats: dict) ->
         default=False,
         console=console,
     )
-    if not want_base_eval:
-        console.print(f"[dim]Skipping base eval. Data generation → SFT → GRPO in Tasks 6-8.[/]\n")
-        return
+    if want_base_eval:
+        _run_base_eval(config)
+    else:
+        console.print(f"[dim]Skipping base eval.[/]\n")
 
-    _run_base_eval(config)
+    _offer_data_generation(config, memory)
+
+
+def _offer_data_generation(config: Config, memory) -> None:
+    """Check for existing training data and offer to generate (or regenerate) it."""
+    training_dir = Path("./data/training")
+    existing_sft = sorted(training_dir.glob("sft_*.jsonl")) if training_dir.exists() else []
+    existing_grpo = sorted(training_dir.glob("grpo_*.jsonl")) if training_dir.exists() else []
+
+    if existing_sft or existing_grpo:
+        console.print(f"\n[{COLORS['orange_3']}]Training data found:[/]")
+        if existing_sft:
+            console.print(f"  SFT:  [dim]{existing_sft[-1].name}[/]")
+        if existing_grpo:
+            console.print(f"  GRPO: [dim]{existing_grpo[-1].name}[/]")
+        want_regen = Confirm.ask(
+            "  Regenerate training data from updated memory?",
+            default=False,
+            console=console,
+        )
+        if not want_regen:
+            console.print(f"[dim]Using existing training data. SFT → Task 7 | GRPO → Task 8[/]\n")
+            return
+    else:
+        want_data = Confirm.ask(
+            "  Generate SFT + GRPO training data now?",
+            default=True,
+            console=console,
+        )
+        if not want_data:
+            console.print(f"[dim]Skipping data generation. Run again to generate.[/]\n")
+            return
+
+    _run_data_cleansing(config, memory)
+
+
+def _run_data_cleansing(config: Config, memory) -> None:
+    """Generate SFT Q&A pairs and GRPO style scenarios from memory."""
+    from openclawmini.agents.data_cleansing import DataCleansingAgent
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+
+    mem_stats = memory.stats()
+
+    console.print(f"\n[bold {COLORS['orange_2']}]📦 Training Data Generation[/]")
+    console.print(
+        f"[dim]Generating [cyan]{config.training.sft_sample_count}[/] SFT samples "
+        f"from {mem_stats['facts']} facts, "
+        f"and [cyan]{config.training.grpo_scenario_count}[/] GRPO scenarios "
+        f"from {mem_stats['writing_samples']} writing samples.[/]\n"
+    )
+
+    extractor = _build_gemini_extractor()
+    if extractor:
+        console.print(f"[dim]Gemini active — generating high-quality training pairs.[/]\n")
+    else:
+        console.print(f"[dim]No GOOGLE_API_KEY — using template-based generation.[/]\n")
+
+    user_name = config.user.name or memory.user.name or "the user"
+    agent = DataCleansingAgent(
+        llm_client=extractor,
+        sft_target=config.training.sft_sample_count,
+        grpo_target=config.training.grpo_scenario_count,
+        quality_threshold=config.training.quality_threshold * 0.7,
+        user_name=user_name,
+    )
+
+    sft_tid = None
+    grpo_tid = None
+    progress_obj = None
+
+    def sft_progress(current: int, total: int) -> None:
+        nonlocal sft_tid, progress_obj
+        if progress_obj is None:
+            return
+        if sft_tid is None:
+            sft_tid = progress_obj.add_task(
+                f"[bold {COLORS['orange_3']}]SFT pairs...[/]", total=total
+            )
+        progress_obj.update(
+            sft_tid, completed=current,
+            description=f"[bold {COLORS['orange_3']}]SFT: {current}/{total} facts[/]",
+        )
+
+    def grpo_progress(current: int, total: int) -> None:
+        nonlocal grpo_tid, progress_obj
+        if progress_obj is None:
+            return
+        if grpo_tid is None:
+            grpo_tid = progress_obj.add_task(
+                f"[bold {COLORS['orange_3']}]GRPO scenarios...[/]", total=total
+            )
+        progress_obj.update(
+            grpo_tid, completed=current,
+            description=f"[bold {COLORS['orange_3']}]GRPO: {current}/{total} samples[/]",
+        )
+
+    try:
+        with Progress(
+            SpinnerColumn(style=COLORS["orange_2"]),
+            TextColumn("[bold {task.description}]"),
+            BarColumn(bar_width=40, style=COLORS["orange_4"], complete_style=COLORS["orange_2"]),
+            MofNCompleteColumn(),
+            console=console,
+            transient=False,
+        ) as prog:
+            progress_obj = prog
+            result = agent.run(
+                memory=memory,
+                sft_progress_callback=sft_progress,
+                grpo_progress_callback=grpo_progress,
+            )
+
+        sft_pct = min(len(result.sft_samples) / max(config.training.sft_sample_count, 1), 1.0)
+        grpo_pct = min(len(result.grpo_scenarios) / max(config.training.grpo_scenario_count, 1), 1.0)
+
+        body = (
+            f"[bold {COLORS['orange_5']}]✓ TRAINING DATA READY[/]\n\n"
+            f"  SFT samples:    [cyan]{len(result.sft_samples)}[/]  {_ascii_bar(sft_pct)}\n"
+            f"  GRPO scenarios: [cyan]{len(result.grpo_scenarios)}[/]  {_ascii_bar(grpo_pct)}\n\n"
+            f"  From facts:     [dim]{result.facts_used}[/]\n"
+            f"  From samples:   [dim]{result.samples_used}[/]\n"
+            f"  From posts:     [dim]{result.posts_used}[/]"
+        )
+        if result.sft_path:
+            body += f"\n\n  SFT  → [dim]{result.sft_path}[/]"
+        if result.grpo_path:
+            body += f"\n  GRPO → [dim]{result.grpo_path}[/]"
+
+        print_panel(body, title="🟠 Data Cleansing")
+        console.print(f"[dim]SFT training → Task 7 | GRPO training → Task 8[/]\n")
+
+    except Exception as e:
+        console.print(f"[red]Data generation failed: {e}[/]")
+        console.print(f"[dim]Check memory data and GOOGLE_API_KEY.[/]")
 
 
 def _run_base_eval(config: Config) -> None:
