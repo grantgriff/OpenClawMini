@@ -91,7 +91,7 @@ class DataCleansingAgent:
     #   generator → Gemini Pro  (data_generation model)
     #   verifier  → Gemini Flash (eval_judge / research_extraction model)
     DEFAULT_DS_GENERATOR = "gemini-2.5-pro"
-    DEFAULT_DS_VERIFIER  = "gemini-2.0-flash-001"
+    DEFAULT_DS_VERIFIER  = "gemini-2.5-flash"
 
     def __init__(
         self,
