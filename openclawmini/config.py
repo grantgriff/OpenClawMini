@@ -19,6 +19,7 @@ PROVIDER_MODELS: dict[str, list[str]] = {
     "google": ["gemini-2.5-pro", "gemini-2.5-flash"],
     "openai": ["gpt-5.2", "gpt-5.2-chat-latest", "gpt-5-mini"],
     "mistral": ["mistral-small-2506", "mistral-large-latest"],
+    "openpipe": ["OpenPipe/Qwen3-14B-Instruct"],
 }
 
 ORCHESTRATOR_OPTIONS: list[dict] = [
@@ -80,7 +81,7 @@ class Config:
     data_generation: ModelConfig = field(default_factory=lambda: ModelConfig("google", "gemini-2.5-pro"))
     grpo_judge: ModelConfig = field(default_factory=lambda: ModelConfig("google", "gemini-2.5-flash"))
     eval_judge: ModelConfig = field(default_factory=lambda: ModelConfig("google", "gemini-2.5-flash"))
-    base_model: ModelConfig = field(default_factory=lambda: ModelConfig("mistral", "mistral-small-2506"))
+    base_model: ModelConfig = field(default_factory=lambda: ModelConfig("openpipe", "OpenPipe/Qwen3-14B-Instruct"))
     training: TrainingConfig = field(default_factory=TrainingConfig)
     user: UserConfig = field(default_factory=UserConfig)
     memory_file_path: str = "./data/memory.json"
@@ -148,7 +149,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         data_generation=_mc("data_generation", "google", "gemini-2.5-pro"),
         grpo_judge=_mc("grpo_judge", "google", "gemini-2.5-flash"),
         eval_judge=_mc("eval_judge", "google", "gemini-2.5-flash"),
-        base_model=_mc("base_model", "mistral", "mistral-small-2506"),
+        base_model=_mc("base_model", "openpipe", "OpenPipe/Qwen3-14B-Instruct"),
         training=training,
         user=user,
         memory_file_path=storage_raw.get("memory_file_path", "./data/memory.json"),

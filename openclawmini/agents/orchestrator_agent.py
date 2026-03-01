@@ -110,9 +110,9 @@ you can run 6+ complete loops.
 
 Decision guidelines:
 1. Always start with run_eval("base") if no eval history exists
-2. If factual accuracy < {sft_threshold:.0%}: research weak categories → generate_sft_data → run_sft
+2. If factual accuracy < {sft_threshold:.0%}: generate_sft_data → run_sft (skip targeted_research if research_history shows Phase 1 already ran)
 3. If factual accuracy >= threshold but overall < target: run_grpo for stylistic improvement
-4. Target specific weak categories with targeted_research before retraining
+4. Only use targeted_research if research_history shows NO prior research for a weak category, or if a category's accuracy is still poor after SFT
 5. Stop when target reached OR after 3 consecutive rounds with no improvement
 6. Be decisive — one action per round, no overthinking
 """
@@ -453,6 +453,11 @@ Decision guidelines:
 
         cost_est = 0.50
         self._state["cost_usd"] = self._state.get("cost_usd", 0.0) + cost_est
+        self._state.setdefault("research_history", []).append({
+            "phase": "orchestrator",
+            "category": category,
+            "facts_added": result.facts_added,
+        })
         self._save_state()
 
         return {
@@ -550,9 +555,9 @@ Decision guidelines:
     def _build_model_fn(self) -> Callable[[str], str]:
         """Build model inference function for the current training stage."""
         if self._current_stage == "base":
-            from openclawmini.utils.llm_client import MistralClient
-            api_key = os.getenv("MISTRAL_API_KEY", "")
-            client = MistralClient(api_key=api_key, model=self.config.base_model.model)
+            from openclawmini.utils.llm_client import OpenPipeClient
+            api_key = os.getenv("OPENPIPE_API_KEY", "")
+            client = OpenPipeClient(api_key=api_key, model=self.config.base_model.model)
             return client.complete
 
         # Fine-tuned stage: use ART's openai_client for inference
@@ -582,6 +587,7 @@ Decision guidelines:
     def _build_initial_message(self, user_name: str, target: float) -> str:
         history = self._state.get("eval_history", [])
         training = self._state.get("training_history", [])
+        research = self._state.get("research_history", [])
         spent = self._state.get("cost_usd", 0.0)
 
         lines = [
@@ -590,6 +596,28 @@ Decision guidelines:
             f"Budget: ${self._budget:.0f} total | ${spent:.2f} spent | "
             f"${self._budget - spent:.2f} remaining",
         ]
+
+        if research:
+            total_facts = sum(r.get("facts_added", 0) for r in research)
+            phase1 = [r for r in research if r.get("phase") == "phase1"]
+            pre_train = [r for r in research if r.get("phase") == "pre_training"]
+            orch = [r for r in research if r.get("phase") == "orchestrator"]
+            parts = []
+            if phase1:
+                parts.append(f"Phase 1 broad research ({phase1[0].get('facts_added', 0)} facts)")
+            if pre_train:
+                cats = ", ".join(r.get("category", "") for r in pre_train if r.get("category"))
+                label = f"pre-training targeted ({sum(r.get('facts_added',0) for r in pre_train)} facts"
+                if cats:
+                    label += f": {cats}"
+                parts.append(label + ")")
+            if orch:
+                cats = ", ".join(r.get("category", "") for r in orch)
+                parts.append(f"orchestrator targeted ({sum(r.get('facts_added',0) for r in orch)} facts: {cats})")
+            lines.append(f"\nResearch already done ({total_facts} total facts): {'; '.join(parts)}.")
+            lines.append("Do NOT run targeted_research unless eval shows a category is still weak after SFT.")
+        else:
+            lines.append("\nNo prior research recorded.")
 
         if history:
             lines.append(f"\nEval history ({len(history)} runs):")
@@ -766,7 +794,7 @@ Decision guidelines:
                     return json.load(f)
             except Exception:
                 pass
-        return {"cost_usd": 0.0, "eval_history": [], "training_history": []}
+        return {"cost_usd": 0.0, "eval_history": [], "training_history": [], "research_history": []}
 
     def _save_state(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)

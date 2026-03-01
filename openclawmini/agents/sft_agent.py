@@ -72,7 +72,7 @@ class SFTAgent:
         wandb_api_key: Falls back to WANDB_API_KEY env var
     """
 
-    ART_BASE_MODEL = "mistral-small-2506"
+    ART_BASE_MODEL = "OpenPipe/Qwen3-14B-Instruct"
     DEFAULT_PROJECT = "openclawmini"
 
     def __init__(

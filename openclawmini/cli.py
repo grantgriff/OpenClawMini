@@ -497,6 +497,72 @@ def _build_gemini_extractor():
         return None
 
 
+def _record_research_in_state(phase: str, facts_added: int, categories: list[str] | None = None) -> None:
+    """Append a research entry to the orchestrator state file so Phase 2 knows research was done."""
+    import json
+    from datetime import datetime, timezone
+
+    state_path = Path("./data/orchestrator/state.json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    except Exception:
+        state = {}
+
+    entry: dict = {
+        "phase": phase,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "facts_added": facts_added,
+    }
+    if categories:
+        entry["categories"] = categories
+
+    state.setdefault("research_history", []).append(entry)
+    state_path.write_text(json.dumps(state, indent=2, default=str))
+
+
+def _run_targeted_research_interactive(config: Config, store: "MemoryStore", memory: "Memory") -> None:
+    """Ask the user which categories to research, then run targeted research on each."""
+    from openclawmini.agents.research import ResearchAgent
+
+    _CATEGORIES = ["work", "education", "skills", "location", "personal", "interests", "achievements"]
+
+    console.print(f"\n[{COLORS['orange_3']}]Which categories would you like to research?[/]\n")
+    for i, cat in enumerate(_CATEGORIES, 1):
+        console.print(f"  [{COLORS['orange_4']}][{i}][/] {cat}")
+    console.print(f"  [{COLORS['orange_4']}][0][/] All categories\n")
+
+    raw = Prompt.ask("  Enter numbers (comma-separated) or 0 for all", default="0", console=console)
+
+    if raw.strip() == "0":
+        selected = _CATEGORIES
+    else:
+        try:
+            indices = [int(x.strip()) - 1 for x in raw.split(",")]
+            selected = [_CATEGORIES[i] for i in indices if 0 <= i < len(_CATEGORIES)]
+        except (ValueError, IndexError):
+            console.print(f"[{COLORS['orange_4']}]Invalid input — skipping targeted research.[/]")
+            return
+
+    if not selected:
+        return
+
+    extractor = _build_gemini_extractor()
+    agent = ResearchAgent(store=store, memory=memory, llm_client=extractor)
+    user_name = getattr(config.user, "name", "")
+    total_added = 0
+
+    for cat in selected:
+        with console.status(f"[dim]Researching [bold]{cat}[/]...[/]"):
+            result = agent.targeted_research(user_name=user_name, category=cat, memory=memory)
+        store.save(memory)
+        console.print(f"  [bold]{cat}[/]: [green]+{result.facts_added} facts[/]")
+        total_added += result.facts_added
+
+    _record_research_in_state("pre_training", total_added, selected)
+    console.print(f"\n[bold {COLORS['orange_5']}]✓ Targeted research complete! +{total_added} facts added.[/]\n")
+
+
 def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge: bool = False) -> None:
     """Run the Research Agent with live Rich progress output."""
     from openclawmini.agents.research import ResearchAgent
@@ -564,6 +630,9 @@ def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge:
 
     # Save updated memory
     store.save(memory)
+
+    # Record research completion in orchestrator state
+    _record_research_in_state("phase1", result.total_added)
 
     # ── Document upload (BEFORE summary so docs enrich the total count) ───
     console.print(
@@ -767,7 +836,7 @@ def _show_pipeline_status(config: Config, memory, eval_set, eval_stats: dict) ->
         return
 
     want_base_eval = Confirm.ask(
-        "  Run base model eval now? (calls Mistral API)",
+        "  Run base model eval now? (calls OpenPipe API)",
         default=False,
         console=console,
     )
@@ -1190,7 +1259,7 @@ def _run_base_eval(config: Config) -> None:
     agent = EvalsAgent.from_env()
 
     console.print(f"\n[bold {COLORS['orange_2']}]🎯 Base Model Eval[/]")
-    console.print(f"[dim]Model: {config.base_model.model}  (Mistral API)[/]\n")
+    console.print(f"[dim]Model: {config.base_model.model}  (OpenPipe API)[/]\n")
 
     task_ids: dict = {}
     progress_obj = None
@@ -1342,6 +1411,20 @@ def cmd_train(
     console.print(f"\n[bold {COLORS['orange_2']}]📊 Generating Eval Set[/]")
     console.print(f"[dim]Building factual questions + stylistic prompts from memory...[/]\n")
     _ensure_eval_set(config, memory)
+
+    # ── Optional: targeted research before training ────────────
+    console.print(
+        f"\n[{COLORS['orange_3']}]Research is complete.[/] "
+        f"[dim]The orchestrator will start training on the current memory.[/]"
+    )
+    if Confirm.ask(
+        "  Run additional targeted research to collect more memory before training?",
+        default=False,
+        console=console,
+    ):
+        _run_targeted_research_interactive(config, store, memory)
+        # Refresh stats after additional research
+        mem_stats = memory.stats()
 
     # ── PHASE 2: Autonomous training loop ─────────────────────
     print_panel(

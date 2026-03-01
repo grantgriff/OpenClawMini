@@ -184,11 +184,11 @@ class EvalsAgent:
 
         Requires MISTRAL_API_KEY in environment.
         """
-        from openclawmini.utils.llm_client import MistralClient
+        from openclawmini.utils.llm_client import OpenPipeClient
 
-        api_key = os.getenv("MISTRAL_API_KEY", "").strip()
-        model = os.getenv("BASE_MODEL", "mistral-small-2506")
-        client = MistralClient(api_key=api_key, model=model)
+        api_key = os.getenv("OPENPIPE_API_KEY", "").strip()
+        model = os.getenv("BASE_MODEL", "OpenPipe/Qwen3-14B-Instruct")
+        client = OpenPipeClient(api_key=api_key, model=model)
         return self.run_eval(
             model_fn=client.complete,
             stage="base",

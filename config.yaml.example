@@ -26,8 +26,8 @@ models:
 
   # Base model to fine-tune
   base_model:
-    provider: "mistral"
-    model: "mistral-small-2506"
+    provider: "openpipe"
+    model: "OpenPipe/Qwen3-14B-Instruct"
 
 training:
   sft_sample_count: 30

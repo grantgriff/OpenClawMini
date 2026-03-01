@@ -26,8 +26,10 @@ dependencies = [
     "requests>=2.31",
     # Web search (no API key required)
     "duckduckgo-search>=6.0",
-    # Mistral API (base model inference + fine-tuning)
+    # Mistral API (kept for legacy compatibility)
     "mistralai>=1.0",
+    # OpenAI-compatible client (used for OpenPipe inference)
+    "openai>=1.0",
     # DataSimulator SDK (SFT dataset generation)
     "datasimulator @ git+https://github.com/grantgriff/datasimulator.git",
     # Weights & Biases (eval metric logging)
