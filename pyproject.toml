@@ -15,6 +15,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    # Gmail integration
+    "google-auth-oauthlib>=1.0",
+    "google-api-python-client>=2.100",
+    "google-auth-httplib2>=0.2",
+    # HTML email body stripping
+    "beautifulsoup4>=4.12",
 ]
 
 [project.scripts]

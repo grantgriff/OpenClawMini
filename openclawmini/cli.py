@@ -349,33 +349,49 @@ def cmd_run() -> None:
         choice = _prompt_int("  Your choice", 1)
         _handle_run_choice(choice, config)
     else:
-        # First run
+        # First run — no memory.json yet
+        from openclawmini.memory import MemoryStore, Memory
+        store = MemoryStore(config.memory_file_path)
+        memory = Memory()
+        memory.user.name = config.user.name
+        memory.user.email = config.user.email
+
         print_panel(
             f"[bold {COLORS['orange_5']}]OpenClawMini — First Run[/]\n\n"
-            f"No memory found. Starting fresh research pipeline.",
+            f"No memory found. Starting fresh research pipeline.\n"
+            f"Configured sources: {', '.join(k for k, v in (config.user.data_sources or {}).items() if v) or 'none'}",
             title="🟠 OpenClawMini",
         )
-        _start_pipeline(config)
+        _run_research(config, store, memory, merge=False)
+        _start_pipeline(config, store, memory)
 
 
 def _handle_run_choice(choice: int, config: Config) -> None:
+    memory_path = Path(config.memory_file_path)
+    from openclawmini.memory import MemoryStore, Memory
+    store = MemoryStore(str(memory_path))
+
     if choice == 1:
         console.print(f"\n[{COLORS['orange_3']}]Continuing with existing memory...[/]")
-        _start_pipeline(config)
+        memory = store.load()
+        _start_pipeline(config, store, memory)
     elif choice == 2:
-        console.print(f"\n[{COLORS['orange_3']}]Refreshing memory... (Research Agent — coming in Task 3)[/]")
-        _start_pipeline(config)
+        console.print(f"\n[{COLORS['orange_3']}]Refreshing memory (research + merge)...[/]")
+        memory = store.load()
+        _run_research(config, store, memory, merge=True)
+        _start_pipeline(config, store, memory)
     elif choice == 3:
-        console.print(f"\n[{COLORS['orange_3']}]File upload... (Research Agent — coming in Task 3)[/]")
-        files = Prompt.ask("  File paths (comma-separated)", default="", console=console)
-        if files:
-            console.print(f"[dim]Files queued: {files}[/]")
-        _start_pipeline(config)
+        console.print(f"\n[{COLORS['orange_3']}]File upload — (Task 4 feature, coming soon)[/]")
+        console.print(f"[dim]For now, run with option 2 to re-research all sources.[/]")
+        memory = store.load()
+        _start_pipeline(config, store, memory)
     elif choice == 4:
         if Confirm.ask("  [red]Delete all memory and restart?[/]", default=False, console=console):
-            Path("data/memory.json").unlink(missing_ok=True)
-            console.print(f"[{COLORS['orange_3']}]Memory cleared. Starting fresh.[/]")
-            _start_pipeline(config)
+            memory_path.unlink(missing_ok=True)
+            console.print(f"[{COLORS['orange_3']}]Memory cleared. Starting fresh research.[/]")
+            memory = Memory()
+            _run_research(config, store, memory, merge=False)
+            _start_pipeline(config, store, memory)
         else:
             console.print("[dim]Cancelled.[/]")
     else:
@@ -383,16 +399,94 @@ def _handle_run_choice(choice: int, config: Config) -> None:
         raise typer.Exit(1)
 
 
-def _start_pipeline(config: Config) -> None:
-    """Stub pipeline entry point — real orchestration wired in Tasks 3-8."""
+def _run_research(config: Config, store: "MemoryStore", memory: "Memory", merge: bool = False) -> None:
+    """Run the Research Agent with live Rich progress output."""
+    from openclawmini.agents.research import ResearchAgent
+    from openclawmini.memory import Memory as Mem
+
+    sources = config.user.data_sources or {}
+
+    active_sources = [k for k, v in sources.items() if v]
+    if not active_sources:
+        console.print(f"[{COLORS['orange_4']}]No data sources configured. "
+                      f"Re-run [bold cyan]openclawmini init[/] to set up sources.[/]")
+        return
+
+    console.print(f"\n[bold {COLORS['orange_2']}]🔍 Research Phase[/]")
+    console.print(f"[dim]Sources: {', '.join(active_sources)}[/]\n")
+
+    agent = ResearchAgent(store=store, memory=memory)
+
+    # Live progress tracking via Rich
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+    task_id = None
+    progress = None
+
+    def on_progress(stage: str, current: int, total: int) -> None:
+        nonlocal task_id, progress
+        if progress is None:
+            return
+        if task_id is None:
+            task_id = progress.add_task(
+                f"[bold {COLORS['orange_3']}]Fetching {stage} emails...[/]",
+                total=total,
+            )
+        progress.update(task_id, completed=current,
+                        description=f"[bold {COLORS['orange_3']}]📧 {stage}: {current}/{total} emails[/]")
+
+    with Progress(
+        SpinnerColumn(style=COLORS["orange_2"]),
+        TextColumn("[bold {task.description}]"),
+        BarColumn(bar_width=40, style=COLORS["orange_4"], complete_style=COLORS["orange_2"]),
+        MofNCompleteColumn(),
+        console=console,
+        transient=False,
+    ) as prog:
+        progress = prog
+        result = agent.run(sources=sources, progress_callback=on_progress)
+
+    # Save updated memory
+    store.save(memory)
+
+    # Print result summary
+    if result.total_added > 0:
+        console.print(f"\n[bold {COLORS['orange_5']}]✓ Research complete![/]")
+        console.print(result.summary())
+    else:
+        console.print(f"\n[{COLORS['orange_4']}]No new items added to memory.[/]")
+        if result.errors:
+            for err in result.errors:
+                console.print(f"  [dim red]• {err}[/]")
+
+    if result.errors:
+        console.print(f"\n[dim]Notes:[/]")
+        for err in result.errors:
+            console.print(f"  [dim]• {err}[/]")
+
+
+def _start_pipeline(config: Config, store=None, memory=None) -> None:
+    """Pipeline entry point — Data → SFT → GRPO (Tasks 6-8 wire in here)."""
     console.print()
+    stats = memory.stats() if memory else {}
+    total = stats.get("total_items", 0)
+
+    if total == 0:
+        print_panel(
+            f"[bold {COLORS['orange_5']}]Memory is empty![/]\n\n"
+            f"Run research first (option 2) to collect your data,\n"
+            f"or run [bold cyan]openclawmini init[/] to configure data sources.",
+            title="🟠 Pipeline",
+        )
+        return
+
     print_panel(
-        f"[bold {COLORS['orange_5']}]Pipeline starting...[/]\n\n"
+        f"[bold {COLORS['orange_5']}]Pipeline ready[/]\n\n"
+        f"  Memory:       [cyan]{total} items[/] collected\n"
         f"  Orchestrator: [cyan]{config.orchestrator.model}[/]\n"
         f"  Base model:   [cyan]{config.base_model.model}[/]\n"
         f"  SFT samples:  [cyan]{config.training.sft_sample_count}[/]\n"
         f"  GRPO targets: [cyan]{config.training.grpo_scenario_count}[/]\n\n"
-        f"[dim]Research → Data → SFT → GRPO pipeline coming in Tasks 3-8.[/]",
+        f"[dim]Data generation → SFT → GRPO loop coming in Tasks 5-8.[/]",
         title="🟠 Pipeline",
     )
 
