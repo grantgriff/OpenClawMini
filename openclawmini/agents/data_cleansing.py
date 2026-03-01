@@ -1,23 +1,20 @@
 """
 Data Cleansing Agent — orchestrates SFT and GRPO data generation.
 
-SFT data  → uses DataSimulator SDK (grantgriff/datasimulator):
-  Writes memory.facts + preferences to a profile .txt, then calls
-  DataSimulator(source=profile.txt, data_type="sft") to generate
-  high-quality Q&A pairs in Mistral fine-tuning JSONL format.
+SFT data  → DataSimulator SDK (grantgriff/datasimulator):
+  Writes memory profile + writing samples to disk, calls DataSimulator
+  with data_type="sft" to generate high-quality Q&A pairs.
 
-GRPO data → custom GRPODataGenerator + DataSimulator prompt augmentation:
-  Primary: derives (prompt, reference_response) pairs from actual writing
-  samples, preserving exact pairing RULER needs.
-  Augmentation: DataSimulator generates diverse QUESTION prompts in SFT
-  mode; we discard the answers and pair the questions with random writing
-  samples as reference — expanding prompt variety without sacrificing style.
+GRPO data → DataSimulator SDK 100%:
+  Feeds ALL memory data (facts + writing_samples + posts + preferences)
+  to DataSimulator, generates `grpo_target` prompts, discards answers.
+  Output: grpo_prompts_*.jsonl — just {"prompt": "..."} per line.
+  ART/RULER handles online scoring at training time; no reference_response needed.
 
-Eval question augmentation → generate_question_prompts():
-  Returns just the question side of DataSimulator SFT output.
-  EvalsAgent can call this to augment the factual eval question set.
+generate_question_prompts() is also public so EvalsAgent can augment
+the eval set with DataSimulator-generated factual questions.
 
-Models (wired from Config or overridden directly):
+Models (wired from Config):
   datasimulator_generator_model: Gemini Pro  (high-quality generation)
   datasimulator_verifier_model:  Gemini Flash (fast quality scoring)
 
@@ -368,7 +365,7 @@ class DataCleansingAgent:
 
         return questions
 
-    # ── GRPO generation (custom + DataSimulator prompt augmentation) ─
+    # ── GRPO generation (DataSimulator 100%) ──────────────────────
 
     def generate_grpo_data(
         self,
@@ -376,18 +373,131 @@ class DataCleansingAgent:
         progress_callback=None,
     ) -> tuple[list[GRPOScenario], Path]:
         """
-        Generate GRPO style scenarios from memory.writing_samples and memory.posts.
+        Generate GRPO training prompts using DataSimulator 100%.
 
-        Primary generation: GRPODataGenerator derives (prompt, reference_response)
-        pairs from actual writing samples so RULER has a real reference to score against.
+        Feeds ALL memory data (facts + writing samples + posts + preferences)
+        to DataSimulator in SFT mode. Discards generated answers and saves
+        only the questions/prompts as grpo_prompts_*.jsonl.
 
-        Augmentation: DataSimulator generates diverse question prompts in SFT mode;
-        we discard the answers and pair the questions with random writing samples as
-        reference_response — expanding prompt variety beyond what writing samples alone
-        can reverse-engineer.
+        Output format per line: {"prompt": "..."} — no reference_response.
+        ART handles online GRPO scoring via RULER at training time.
+
+        Falls back to GRPODataGenerator if DataSimulator unavailable.
         """
-        import random
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        tag = _now_tag()
+        jsonl_path = self.output_dir / f"grpo_prompts_{tag}.jsonl"
 
+        try:
+            prompts = self._generate_grpo_datasimulator(memory)
+            if not prompts:
+                raise ValueError("DataSimulator returned no prompts")
+        except Exception as ds_err:
+            _warn(f"DataSimulator GRPO unavailable ({ds_err}), using fallback generator")
+            prompts = self._generate_grpo_fallback(memory, progress_callback)
+
+        # Build lightweight GRPOScenario list (prompt only — no reference needed for ART)
+        scenarios = [
+            GRPOScenario(
+                prompt=p,
+                reference_response="",       # ART RULER scores online; no pre-set reference
+                style_markers=["match user's natural writing style"],
+                scenario_type="datasimulator",
+                quality_score=7.5,
+            )
+            for p in prompts
+        ]
+
+        # Save as prompts-only JSONL for ART
+        with open(jsonl_path, "w") as f:
+            for sc in scenarios:
+                f.write(json.dumps({"prompt": sc.prompt}) + "\n")
+
+        return scenarios, jsonl_path
+
+    def _generate_grpo_datasimulator(self, memory) -> list[str]:
+        """Run DataSimulator across ALL memory sources and return user questions only."""
+        from datasimulator import DataSimulator  # type: ignore[import]
+
+        if not memory.facts and not memory.writing_samples and not memory.posts:
+            raise ValueError("Memory is empty")
+
+        # Build source list: facts profile + writing samples + preferences
+        profile_path = self._write_memory_profile(memory)
+        sources = [str(profile_path)]
+        if memory.writing_samples or memory.posts:
+            samples_path = self._write_writing_samples(memory)
+            sources.append(str(samples_path))
+        if memory.preferences:
+            prefs_path = self._write_preferences(memory)
+            sources.append(str(prefs_path))
+
+        output_dir = self.output_dir / "grpo_cache"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"grpo_raw_{_now_tag()}.jsonl"
+
+        sdk = DataSimulator(
+            source=sources,
+            data_type="sft",           # SFT mode → rich Q&A, we keep only questions
+            models={
+                "generator": self.datasimulator_generator_model,
+                "verifier": self.datasimulator_verifier_model,
+            },
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            quality_threshold=self.quality_threshold,
+            max_cost=8.0,
+            batch_size=10,
+            parallel_batches=2,
+            interactive=False,
+            checkpoint_dir=str(self.output_dir / "checkpoints"),
+        )
+
+        domain_context = (
+            f"Generate diverse writing prompts and questions that test whether an AI "
+            f"model responds in {self.user_name}'s voice, style, and persona.\n\n"
+            f"Cover all dimensions:\n"
+            f"- Factual persona questions ('Where do you work?', 'Tell me about yourself')\n"
+            f"- Writing tasks ('Draft a quick email to a colleague about X')\n"
+            f"- Stylistic prompts ('How would you respond to a recruiter message?')\n"
+            f"- Preference probes ('What's your take on remote work?')\n"
+            f"- Situational ('You just shipped a big feature — what do you say to your team?')\n\n"
+            f"Vary difficulty and register. Draw on all categories in the source material."
+        )
+
+        dataset = sdk.generate(
+            num_samples=self.grpo_target,
+            domain_context=domain_context,
+            show_progress=False,
+        )
+        dataset.save(str(output_path))
+
+        # Extract only the user-turn questions
+        prompts: list[str] = []
+        try:
+            with open(output_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        messages = data.get("messages", [])
+                        user_msg = next(
+                            (m for m in messages if m.get("role") == "user"), None
+                        )
+                        if user_msg and user_msg.get("content"):
+                            prompts.append(user_msg["content"])
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        except FileNotFoundError:
+            pass
+
+        return prompts[:self.grpo_target]
+
+    def _generate_grpo_fallback(self, memory, progress_callback=None) -> list[str]:
+        """GRPODataGenerator fallback — returns prompt strings only."""
         generator = GRPODataGenerator(
             llm_client=self._llm,
             user_name=self.user_name,
@@ -398,35 +508,25 @@ class DataCleansingAgent:
             target_count=self.grpo_target,
             progress_callback=progress_callback,
         )
+        return [sc.prompt for sc in scenarios if sc.prompt]
 
-        # Augment with DataSimulator-generated prompts (questions only)
-        usable_samples = [
-            s for s in memory.writing_samples if len(s.text) >= 50
+    def _write_preferences(self, memory) -> Path:
+        """Write user preferences as a plain-text file for DataSimulator."""
+        lines = [
+            f"# Preferences & Opinions: {self.user_name}",
+            "",
+            f"The following reflect {self.user_name}'s documented preferences and opinions.",
+            "",
         ]
-        if usable_samples:
-            # Request ~20% of target as additional diverse prompts
-            extra_count = max(10, self.grpo_target // 5)
-            try:
-                extra_prompts = self.generate_question_prompts(memory, count=extra_count)
-                for prompt_text in extra_prompts:
-                    ref_sample = random.choice(usable_samples)
-                    scenarios.append(GRPOScenario(
-                        prompt=prompt_text,
-                        reference_response=ref_sample.text,
-                        style_markers=["matches writing style", "first person", "natural tone"],
-                        scenario_type="style_prompt",
-                        source_sample_id=ref_sample.id,
-                        quality_score=7.0,
-                    ))
-            except Exception:
-                pass  # augmentation is best-effort
+        for i, pref in enumerate(memory.preferences[:40]):
+            cat = str(pref.category).split(".")[-1].replace("_", " ").title() if hasattr(pref, "category") else "Preference"
+            lines.append(f"## {cat} Preference {i + 1}")
+            lines.append(pref.content)
+            lines.append("")
 
-        tag = _now_tag()
-        jsonl_path = self.output_dir / f"grpo_{tag}.jsonl"
-        meta_path = self.output_dir / f"grpo_{tag}_meta.json"
-        generator.save_jsonl(scenarios, jsonl_path)
-        generator.save_metadata(scenarios, meta_path)
-        return scenarios, jsonl_path
+        prefs_path = self.output_dir / "memory_preferences.txt"
+        prefs_path.write_text("\n".join(lines), encoding="utf-8")
+        return prefs_path
 
     # ── Full run ───────────────────────────────────────────────
 

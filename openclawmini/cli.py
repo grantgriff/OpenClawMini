@@ -806,11 +806,195 @@ def _run_data_cleansing(config: Config, memory) -> None:
         ds_tag = " [dim](via DataSimulator)[/]" if result.used_datasimulator else " [dim](template)[/]"
         body += f"\n  SFT method:{ds_tag}"
         print_panel(body, title="🟠 Data Cleansing")
-        console.print(f"[dim]SFT training → Task 7 | GRPO training → Task 8[/]\n")
+
+        # Offer SFT training now that data is ready
+        _offer_sft_training(config, result, memory)
 
     except Exception as e:
         console.print(f"[red]Data generation failed: {e}[/]")
         console.print(f"[dim]Check memory data and GOOGLE_API_KEY.[/]")
+
+
+def _offer_sft_training(config: Config, data_result, memory) -> None:
+    """After data gen, offer to run SFT training via ART."""
+    from rich.prompt import Confirm
+
+    has_wandb = bool(os.getenv("WANDB_API_KEY", "").strip())
+    if not has_wandb:
+        console.print(f"\n[dim]Tip: Add WANDB_API_KEY to .env to run SFT via ART serverless.[/]")
+        return
+
+    sft_path = data_result.sft_path
+    if not sft_path or not Path(sft_path).exists():
+        console.print(f"[dim]No SFT data file found — skipping training offer.[/]")
+        return
+
+    want_sft = Confirm.ask(
+        "  Run SFT training now via ART serverless (CoreWeave GPU)?",
+        default=True,
+        console=console,
+    )
+    if not want_sft:
+        console.print(f"[dim]Skipping SFT. Run again to train.[/]\n")
+        return
+
+    _run_sft_training(config, Path(sft_path), memory)
+
+
+def _run_sft_training(config: Config, sft_path: Path, memory) -> None:
+    """Run SFT training via ART, then eval, then offer GRPO."""
+    from openclawmini.agents.sft_agent import SFTAgent
+    from openclawmini.agents.evals import EvalsAgent
+
+    user_name = config.user.name or memory.user.name or "the user"
+
+    console.print(f"\n[bold {COLORS['orange_2']}]🎯 SFT Training — ART Serverless[/]")
+    console.print(f"[dim]Model: mistralai/Ministral-8B-Instruct-2410  Data: {sft_path.name}[/]\n")
+    console.print(f"[dim]Compute runs on CoreWeave GPU via W&B ART. This may take several minutes.[/]\n")
+
+    agent = SFTAgent.from_config(config, user_name=user_name)
+
+    try:
+        with console.status(f"[bold {COLORS['orange_3']}]SFT training in progress...[/]"):
+            sft_result = agent.train(sft_path)
+
+        print_panel(
+            f"[bold {COLORS['orange_5']}]✓ SFT COMPLETE[/]\n\n"
+            f"  Model:    [cyan]{sft_result.model_name}[/]\n"
+            f"  Samples:  [cyan]{sft_result.samples_trained}[/]\n"
+            f"  Project:  [dim]{sft_result.project}[/]",
+            title="🟠 SFT",
+        )
+
+        # Post-SFT eval
+        console.print(f"\n[bold {COLORS['orange_2']}]📊 Post-SFT Eval[/]")
+        _run_stage_eval(config, stage="sft", model_name=sft_result.model_name)
+
+        # Routing decision → offer GRPO
+        _offer_grpo_training(config, sft_result, memory, user_name)
+
+    except Exception as e:
+        console.print(f"[red]SFT training failed: {e}[/]")
+        console.print(f"[dim]Check WANDB_API_KEY and openpipe-art installation.[/]")
+
+
+def _run_stage_eval(config: Config, stage: str, model_name: str) -> None:
+    """Run factual + stylistic eval against an ART-trained model."""
+    from openclawmini.agents.evals import EvalsAgent
+    from openclawmini.eval.router import decide_next_action
+
+    agent = EvalsAgent.from_env()
+
+    # Build a model_fn that queries the ART model via its openai_client
+    def art_model_fn(prompt: str) -> str:
+        import asyncio
+        import art  # type: ignore[import]
+
+        model = art.TrainableModel(
+            name=model_name,
+            project=os.getenv("WANDB_PROJECT", "openclawmini"),
+            base_model="mistralai/Ministral-8B-Instruct-2410",
+        )
+
+        async def _query():
+            backend = art.ServerlessBackend(api_key=os.getenv("WANDB_API_KEY", ""))
+            await model.register(backend)
+            client = model.openai_client()
+            resp = await client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=model_name,
+                max_tokens=256,
+                temperature=0.3,
+            )
+            return resp.choices[0].message.content or ""
+
+        try:
+            return asyncio.run(_query())
+        except Exception:
+            return ""
+
+    try:
+        results = agent.run_eval(model_fn=art_model_fn, stage=stage)
+
+        action = decide_next_action(results, config)
+        results.recommended_action = action.type
+
+        factual_bar = _ascii_bar(results.factual_accuracy)
+        stylistic_bar = _ascii_bar(results.stylistic_accuracy)
+
+        print_panel(
+            f"[bold {COLORS['orange_5']}]{stage.upper()} EVAL[/]\n\n"
+            f"  Factual:    {results.factual_accuracy:.0%}  {factual_bar}\n"
+            f"  Stylistic:  {results.stylistic_accuracy:.0%}  {stylistic_bar}\n"
+            f"  Overall:    {results.overall_accuracy:.0%}  {_ascii_bar(results.overall_accuracy)}\n\n"
+            f"→ Routing: [bold cyan]{action.type.upper()}[/]  {action.reason}",
+            title=f"🟠 {stage.upper()} Eval",
+        )
+
+        try:
+            from openclawmini.integrations.wb_logger import WBLogger
+            WBLogger.from_env().log_eval(results)
+        except Exception:
+            pass
+
+    except Exception as e:
+        console.print(f"[red]Eval failed: {e}[/]")
+
+
+def _offer_grpo_training(config: Config, sft_result, memory, user_name: str) -> None:
+    """After SFT eval, offer GRPO training."""
+    from rich.prompt import Confirm
+
+    grpo_files = sorted(Path("./data/training").glob("grpo_prompts_*.jsonl")) if Path("./data/training").exists() else []
+    if not grpo_files:
+        console.print(f"[dim]No GRPO prompts file found — run data generation first.[/]")
+        return
+
+    want_grpo = Confirm.ask(
+        "  Run GRPO style-alignment training now?",
+        default=True,
+        console=console,
+    )
+    if not want_grpo:
+        console.print(f"[dim]Skipping GRPO. Run again to train.[/]\n")
+        return
+
+    _run_grpo_training(config, sft_result=sft_result, memory=memory, user_name=user_name)
+
+
+def _run_grpo_training(config: Config, sft_result, memory, user_name: str) -> None:
+    """Run GRPO training via ART + RULER."""
+    from openclawmini.agents.grpo_agent import GRPOAgent
+
+    grpo_files = sorted(Path("./data/training").glob("grpo_prompts_*.jsonl"))
+    grpo_path = grpo_files[-1]
+
+    console.print(f"\n[bold {COLORS['orange_2']}]🎨 GRPO Training — ART + RULER[/]")
+    console.print(f"[dim]Style alignment via online RL. Prompts: {grpo_path.name}[/]")
+    console.print(f"[dim]RULER (Gemini Flash) scores each completion against {user_name}'s writing style.[/]\n")
+
+    agent = GRPOAgent.from_sft_result(sft_result, config=config, user_name=user_name)
+
+    try:
+        with console.status(f"[bold {COLORS['orange_3']}]GRPO training in progress...[/]"):
+            grpo_result = agent.train(grpo_path, memory=memory, user_name=user_name)
+
+        print_panel(
+            f"[bold {COLORS['orange_5']}]✓ GRPO COMPLETE[/]\n\n"
+            f"  Model:    [cyan]{grpo_result.model_name}[/]\n"
+            f"  Prompts:  [cyan]{grpo_result.prompts_trained}[/]\n"
+            f"  Steps:    [cyan]{grpo_result.total_steps}[/]\n"
+            f"  Avg RULER reward: [cyan]{grpo_result.final_reward:.3f}[/]",
+            title="🟠 GRPO",
+        )
+
+        # Post-GRPO eval
+        console.print(f"\n[bold {COLORS['orange_2']}]📊 Post-GRPO Eval[/]")
+        _run_stage_eval(config, stage="grpo", model_name=grpo_result.model_name)
+
+    except Exception as e:
+        console.print(f"[red]GRPO training failed: {e}[/]")
+        console.print(f"[dim]Check WANDB_API_KEY, GOOGLE_API_KEY, and openpipe-art installation.[/]")
 
 
 def _run_base_eval(config: Config) -> None:
